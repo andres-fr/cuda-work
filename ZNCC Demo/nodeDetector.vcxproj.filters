@@ -1,0 +1,38 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Header">
+      <UniqueIdentifier>{1cefa0b1-db0e-4d96-a1ac-233bc2adcf71}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="source">
+      <UniqueIdentifier>{6500c096-c1d7-4e0b-a9ba-333a2456adf9}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Kernel">
+      <UniqueIdentifier>{27629462-1205-47bf-90bd-22e795cd9ad0}</UniqueIdentifier>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\main.cpp">
+      <Filter>source</Filter>
+    </ClCompile>
+    <ClCompile Include="src\nodeDetector.cpp">
+      <Filter>source</Filter>
+    </ClCompile>
+    <ClCompile Include="..\GlobalHeader\saveMatrix.cpp">
+      <Filter>source</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="src\nodeDetector.h">
+      <Filter>Header</Filter>
+    </ClInclude>
+    <ClInclude Include="src\cuKernel.h">
+      <Filter>Header</Filter>
+    </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <CudaCompile Include="src\cuNodeDetector.cu">
+      <Filter>Kernel</Filter>
+    </CudaCompile>
+  </ItemGroup>
+</Project>
