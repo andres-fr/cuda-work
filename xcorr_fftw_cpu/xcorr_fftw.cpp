@@ -1,5 +1,5 @@
-// 1) configure your FFTW creating the "wisdom" (see f.e. https://www.systutorials.com/docs/linux/man/1-fftwf-wisdom/):
-//    fftwf-wisdom -v -c -o wisdomfile DOESNT WORK! BAD FORMATTING? IS IT FFTW2?
+// 1) configure your FFTW creating the "wisdom" (see f.e. https://www.systutorials.com/docs/linux/man/1-fftw-wisdom/):
+//    fftw-wisdom -v -c -o wisdomfile DOESNT WORK! BAD FORMATTING? IS IT FFTW2?
 //
 // 2) compile and check run with valgrind (has "possibly lost" due to openMP, but it is ok)
 //  g++ -Wall -Wextra xcorr_fftw.cpp -fopenmp -lfftw3 -o test && valgrind --leak-check=full -v  ./test
@@ -100,8 +100,8 @@ public:
                      double* patch, const size_t p_size,
                      const string wisdom_path="wisdomfile"){
     if(fftw_import_wisdom_from_filename(wisdom_path.c_str())==0){
-      throw invalid_argument("FFTW import wisdom was unsuccessfull. Do you have a valid wisdom in "+
-                             wisdom_path+"?");
+      cout << "FFTW import wisdom was unsuccessfull. Do you have a valid wisdom in "
+           <<  wisdom_path << "?";
     }
     // grab sizes, calculate padded size and its complex counterpart
     this->s_size = s_size;
@@ -169,14 +169,14 @@ public:
 
 int main(int argc,  char** argv){
   cout << "start" << endl;
-  size_t o_size = 44100*3;
+  size_t o_size = 4410*300;
   double* o = new double[o_size];  for(size_t i=0; i<o_size; ++i){o[i] = i+1;}
-  size_t m1_size = 44100*1;
+  size_t m1_size = 4410*20;
   double* m1 = new double[m1_size]; for(size_t i=0; i<m1_size; ++i){m1[i]=1;}
 
   Real_XCORR_Manager manager(o, o_size, m1, m1_size);
 
-  for(int k=0; k<100; ++k){
+  for(int k=0; k<100000; ++k){
     cout << "iter no "<< k << endl;
     manager.execute_xcorr();
   }

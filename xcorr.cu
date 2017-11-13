@@ -178,10 +178,10 @@ class Real_1DCUFFT_Manager {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 int main(){
-  size_t o_size = 32000;
+  size_t o_size = 32762;
   size_t padded_size = pow2ceil(o_size)*2;
   size_t fft_size = padded_size/2+1;
-  size_t m1_size = 32000;
+  size_t m1_size = 32762;
   size_t xcorr1_size = o_size+m1_size-1;
 
   // CREATE THE REAL SIGNALS (1,2,3,4...) 

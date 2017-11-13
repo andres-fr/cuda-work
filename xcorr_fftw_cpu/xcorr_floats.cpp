@@ -7,6 +7,9 @@
 // 3) run??
 // g++ -Wall -Wextra xcorr_floats.cpp -fopenmp -lfftw3f -o test && ./test
 
+
+
+
 #include <string.h>
 #include <math.h>
 #include <time.h>
@@ -28,38 +31,7 @@
 using namespace std;
 
 
-// 6
-// 9
-// 12
-// 15
-// 18
-// 21
-// 24
-// 27
-// 19
-// 10
-// 9.53674e-07
-// 0
-// 0
-// 9.53674e-07
-// 1.19209e-06
-// 1.90735e-06
-// 0
-// 0
-// -7.15256e-07
-// 9.53674e-07
-// 0
-// 0
-// -9.53674e-07
-// -9.53674e-07
-// 0
-// -4.76837e-07
-// 9.53674e-07
-// 0
-// 0
-// 0
-// 1
-// 3
+
 
 
 
@@ -112,18 +84,47 @@ void conjugate_mul(const fftwf_complex a, const fftwf_complex b, fftwf_complex &
   result[IMAG] =  a[IMAG]*b[REAL] - a[REAL]*b[IMAG];
 }
 
+
+class FFT_Forward_Signal{
+public:
+  float* data;
+  size_t size;
+  size_t size_padded;
+  size_t size_complex;
+  //
+  fftwf_complex* spectrum;
+  fftwf_plan plan;
+  FFT_Forward_Signal(size_t size){
+    this->size = size;
+    this->size_padded = pow(2, ceil(log2(size)))*2;
+    this->size_complex = this->size_padded/2+1;
+    this->data = allocate_padded_aligned_real(size, this->size_padded-size);
+    //
+    this->spectrum = allocate_padded_aligned_complex(this->size_complex, 0);
+    this->plan = fftwf_plan_dft_r2c_1d(this->size_padded, this->data,
+                                       this->spectrum, FFTW_ESTIMATE);
+  }
+  ~FFT_Forward_Signal(){
+    fftwf_free(this->data);
+    fftwf_free(this->spectrum);
+    fftwf_destroy_plan(this->plan);
+  }
+};
+
 class Real_XCORR_Manager {
 private:
   //
   float* signal;
-  float* patch;
   size_t s_size;
+  size_t s_size_padded;
+  size_t s_size_complex;
+  //
+  float* patch;
   size_t p_size;
+  size_t p_size_padded;
+  size_t p_size_complex;
   //
   float* xcorr;
-  size_t xcorr_size;
-  size_t fft_size_real;
-  size_t fft_size_complex;
   //
   fftwf_complex* s_spectrum;
   fftwf_complex* p_spectrum;
@@ -131,7 +132,7 @@ private:
   //
   fftwf_plan plan_forward_s;
   fftwf_plan plan_forward_p;
-  fftwf_plan plan_backward_s;
+  fftwf_plan plan_backward_xcorr;
 public:
   Real_XCORR_Manager(float* signal, const size_t s_size,
                      float* patch, const size_t p_size,
@@ -142,31 +143,38 @@ public:
     }
     // grab sizes, calculate padded size and its complex counterpart
     this->s_size = s_size;
+    this->s_size_padded = pow(2, ceil(log2(s_size)))*2;
+    this->s_size_complex = this->s_size_padded/2+1;
     this->p_size = p_size;
-    this->fft_size_real = pow(2, ceil(log2(s_size)))*2;
-    this->fft_size_complex = this->fft_size_real/2+1;
-    // allocate real signals
-    this->signal = allocate_padded_aligned_real(s_size, fft_size_real-s_size);
-    this->patch  = allocate_padded_aligned_real(p_size, fft_size_real-p_size);
-    this->xcorr  = allocate_padded_aligned_real(s_size, fft_size_real-s_size);
+    this->p_size_padded = this->s_size_padded;// pow(2, ceil(log2(p_size)))*2;
+    this->p_size_complex = this->p_size_padded/2+1;
+    // allocate real signals (asume signal is longer than patch)
+    this->signal = allocate_padded_aligned_real(s_size, this->s_size_padded-s_size);
+    this->patch  = allocate_padded_aligned_real(p_size, this->p_size_padded-p_size);
+    this->xcorr  = allocate_padded_aligned_real(s_size, this->s_size_padded-s_size);
     // copy to allocated signals
-    #pragma omp parallel for
-    for(size_t i=0; i<s_size; ++i){
-      this->signal[i] = signal[i]/fft_size_real; // divide to re-normalize XCORR
-    }
     // memcpy(this->signal, signal, sizeof(float)*s_size);
-    memcpy(this->patch, patch, sizeof(float)*p_size);
+    // memcpy(this->patch, patch, sizeof(float)*p_size);
+    #pragma omp parallel for
+    for(size_t i=0; i<this->s_size; ++i){
+      this->signal[i] = signal[i] /this->s_size_padded; // divide to re-normalize XCORR
+    }
+    #pragma omp parallel for
+    for(size_t i=0; i<this->p_size; ++i){
+      this->patch[i] = patch[i];//  /this->p_size_padded; // divide to re-normalize XCORR
+    }
+
     // allocate complex signals
-    this->s_spectrum = allocate_padded_aligned_complex(fft_size_complex, 0);
-    this->p_spectrum = allocate_padded_aligned_complex(fft_size_complex, 0);
-    this->xcorr_spectrum = allocate_padded_aligned_complex(fft_size_complex, 0);
+    this->s_spectrum = allocate_padded_aligned_complex(this->s_size_complex, 0);
+    this->p_spectrum = allocate_padded_aligned_complex(this->p_size_complex, 0);
+    this->xcorr_spectrum = allocate_padded_aligned_complex(this->s_size_complex, 0);
     // create the FFT plans
-    this->plan_forward_s  = fftwf_plan_dft_r2c_1d(fft_size_real, this->signal,
+    this->plan_forward_s  = fftwf_plan_dft_r2c_1d(this->s_size_padded, this->signal,
                                                  this->s_spectrum, FFTW_ESTIMATE); // FFTW_ESTIMATE
-    this->plan_forward_p  = fftwf_plan_dft_r2c_1d(fft_size_real, this->patch,
+    this->plan_forward_p  = fftwf_plan_dft_r2c_1d(this->p_size_padded, this->patch,
                                                  this->p_spectrum, FFTW_ESTIMATE); // FFTW_ESTIMATE
-    this->plan_backward_s = fftwf_plan_dft_c2r_1d(fft_size_real, this->xcorr_spectrum,
-                                                 this->xcorr, FFTW_ESTIMATE);
+    this->plan_backward_xcorr = fftwf_plan_dft_c2r_1d(this->s_size_padded, this->xcorr_spectrum,
+                                                      this->xcorr, FFTW_ESTIMATE);
     // export updated wisdom
     fftwf_export_wisdom_to_filename(wisdom_path.c_str());
   }
@@ -181,19 +189,28 @@ public:
     //
     fftwf_destroy_plan(this->plan_forward_s);
     fftwf_destroy_plan(this->plan_forward_p);
-    fftwf_destroy_plan(this->plan_backward_s);
+    fftwf_destroy_plan(this->plan_backward_xcorr);
   }
   void execute_xcorr(){
+    const size_t sig_patch_ratio = this->s_size_padded / this->p_size_padded;
     fftwf_execute(this->plan_forward_s);
     fftwf_execute(this->plan_forward_p);
+    this->xcorr_spectrum[0][REAL] = this->s_spectrum[0][REAL]*this->p_spectrum[0][REAL];
     #pragma omp parallel for
-    for(size_t i=0; i<this->fft_size_complex; ++i){
-      conjugate_mul(this->s_spectrum[i], this->p_spectrum[i], this->xcorr_spectrum[i]);
+    for(size_t i=1; i<this->s_size_complex; ++i){
+      if(i%sig_patch_ratio){ // the normal case, patch has no entry and therefore signal is taken directly
+        this->xcorr_spectrum[i][REAL] = this->s_spectrum[i][REAL];
+        this->xcorr_spectrum[i][IMAG] = this->s_spectrum[i][IMAG];
+      }
+      else{ // for the i%??==0 cases, patch has entry and gets multiplied
+        conjugate_mul(this->s_spectrum[i], this->p_spectrum[i/sig_patch_ratio],
+                      this->xcorr_spectrum[i]);
+      }
     }
-    fftwf_execute(this->plan_backward_s);
+    fftwf_execute(this->plan_backward_xcorr);
   }
   void print_xcorr(){
-    for(size_t i=0; i<this->fft_size_real; ++i){
+    for(size_t i=0; i<this->s_size_padded; ++i){
       cout << this->xcorr[i] << endl;
     }
   }
@@ -206,14 +223,14 @@ public:
 
 int main(int argc,  char** argv){
   cout << "start" << endl;
-  size_t o_size = 44100*3;
+  size_t o_size = 20; // 44100*3;
   float* o = new float[o_size];  for(size_t i=0; i<o_size; ++i){o[i] = i+1;}
-  size_t m1_size = 44100*0.5;
+  size_t m1_size = 3; // 44100*0.5;
   float* m1 = new float[m1_size]; for(size_t i=0; i<m1_size; ++i){m1[i]=1;}
 
   Real_XCORR_Manager manager(o, o_size, m1, m1_size);
 
-  for(int k=0; k<100000; ++k){
+  for(int k=0; k<1000; ++k){
     cout << "iter no "<< k << endl;
     manager.execute_xcorr();
   }
@@ -223,3 +240,17 @@ int main(int argc,  char** argv){
   delete[] m1;
   return 0;
 }
+
+
+// TODO:
+// overlap-save: http://www.comm.utoronto.ca/~dkundur/course_info/real-time-DSP/notes/8_Kundur_Overlap_Save_Add.pdf
+// add support for multiple "materials": maybe a "fft_signal" class with
+//    the array, its length, its padded len, the complex len, the complex array and the fft plan
+// the fft manager holds a signal for the original and a vector<signal> for the materials
+
+// the optimizer inherits from the manager, but adds:
+//   the xcorr field has to be adapted to hold the original at the beginning and be subtracted and such
+//   the "picker" method which reads an ASCII config file (a cyclic sequence, a random dist, some heuristic...)
+//   the "strategy" config, that tells, once having the xcorr, where to add the file
+//   the "optimizer" method which following {picker_conf, strategy_conf, extra_parameters} performs the optimization and outputs list and wave (if some flag)
+//
