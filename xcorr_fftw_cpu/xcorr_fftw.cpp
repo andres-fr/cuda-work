@@ -5,8 +5,7 @@
 //  g++ -Wall -Wextra xcorr_fftw.cpp -fopenmp -lfftw3f -o test && valgrind --leak-check=full -v  ./test
 
 // 3) run??
-// g++ -Wall -Wextra xcorr_fftw.cpp -fopenmp -lfftw3f -o test && ./test
-
+// g++ -std=c++11 -Wall -Wextra xcorr_fftw.cpp -fopenmp -lfftw3f -o test && valgrind --leak-check=full -v ./test
 
 
 
@@ -86,43 +85,19 @@ void conjugate_mul(const fftwf_complex a, const fftwf_complex b, fftwf_complex &
 }
 
 
-// class ComplexSignal{
-// public:
-//   float* data;
-//   size_t size;
-//   size_t size_padded;
-//   size_t size_complex;
-//   //
-//   fftwf_complex* spectrum;
-//   fftwf_plan plan;
-//   FFT_Forward_Signal(size_t size){
-//     this->size = size;
-//     this->size_padded = pow(2, ceil(log2(size)))*2;
-//     this->size_complex = this->size_padded/2+1;
-//     this->data = allocate_padded_aligned_real(size, 0, this->size_padded-size);
-//     //
-//     this->spectrum = allocate_padded_aligned_complex(this->size_complex, 0, 0);
-//     this->plan = fftwf_plan_dft_r2c_1d(this->size_padded, this->data,
-//                                        this->spectrum, FFTW_ESTIMATE);
-//   }
-//   ~FFT_Forward_Signal(){
-//     fftwf_free(this->data);
-//     fftwf_free(this->spectrum);
-//     fftwf_destroy_plan(this->plan);
-//   }
-// };
-
 class FloatSignal{
 public:
-  float* data;
   size_t size;
   size_t padding_before;
   size_t padding_after;
   size_t size_padded;
+  float* data;
   explicit FloatSignal(float* data, size_t size, size_t padding_before=0, size_t padding_after= 0)
-    : size(size), padding_before(padding_before), padding_after(padding_after) {
-    this->size_padded = size+padding_before+padding_after;
-    this->data = fftwf_alloc_real(size+padding_before+padding_after);
+    : size(size),
+      padding_before(padding_before),
+      padding_after(padding_after),
+      size_padded(size+padding_before+padding_after),
+      data(fftwf_alloc_real(size_padded)){
     if(padding_before>0){memset(this->data, 0, sizeof(float)*padding_before);}
     if(data!=NULL){memcpy(this->data, data, sizeof(fftwf_complex)*size);}
     if(padding_after>0){memset(this->data+padding_before+size, 0, sizeof(float)*padding_after);}
@@ -130,10 +105,6 @@ public:
   explicit FloatSignal(size_t size, size_t padding_before=0, size_t padding_after= 0)
     : FloatSignal(NULL, size, padding_before, padding_after){}
   ~FloatSignal(){fftwf_free(this->data);}
-  // deleted copy- and assignment constructors
-  FloatSignal(const FloatSignal& copyFrom)=delete;
-  FloatSignal& operator= (const FloatSignal& copyFrom)=delete;
-  //
   void divideBy(const float x){
     const size_t start = this->padding_before;
     const size_t end = start+this->size;
@@ -148,19 +119,18 @@ public:
   }
 };
 
+
+
 class ComplexSignal{
 public:
-  fftwf_complex* data;
   size_t size;
-  explicit ComplexSignal(fftwf_complex* data, size_t size) : size(size) {
-    this->data = fftwf_alloc_complex(size);
+  fftwf_complex* data;
+  explicit ComplexSignal(fftwf_complex* data, size_t size)
+    : size(size), data(fftwf_alloc_complex(size)) {
     if(data!=NULL){memcpy(this->data, data, sizeof(fftwf_complex)*size);}
   }
   explicit ComplexSignal(size_t size) : ComplexSignal(NULL, size){}
   ~ComplexSignal(){fftwf_free(this->data);}
-  // deleted copy- and assignment constructors
-  ComplexSignal(const ComplexSignal& copyFrom)=delete;
-  ComplexSignal& operator= (const ComplexSignal& copyFrom)=delete;
 };
 
 
@@ -169,94 +139,77 @@ class FFT_ForwardPlan{
 private:
   fftwf_plan plan;
 public:
-  explicit FFT_ForwardPlan(const size_t size, FloatSignal fs, ComplexSignal cs,
-                            const unsigned flags=FFTW_ESTIMATE){
-    this->plan = fftwf_plan_dft_r2c_1d(size, fs.data, cs.data, flags);
-  }
+  explicit FFT_ForwardPlan(size_t size, FloatSignal fs, ComplexSignal cs)
+    : plan(fftwf_plan_dft_r2c_1d(size, fs.data, cs.data, FFTW_ESTIMATE)){}
   ~FFT_ForwardPlan(){fftwf_destroy_plan(this->plan);}
-  // deleted copy- and assignment constructors
-  FFT_ForwardPlan(const FFT_ForwardPlan& copyFrom)=delete;
-  FFT_ForwardPlan& operator= (const FFT_ForwardPlan& copyFrom)=delete;
-  //
   void execute(){fftwf_execute(this->plan);}
 };
+
 
 class FFT_BackwardPlan{
 private:
   fftwf_plan plan;
 public:
-  explicit FFT_BackwardPlan(const size_t size, ComplexSignal cs, FloatSignal fs,
-                            const unsigned flags=FFTW_ESTIMATE){
-    this->plan = fftwf_plan_dft_r2c_1d(size, cs.data, fs.data, flags);
-  }
+  explicit FFT_BackwardPlan(size_t size, ComplexSignal cs, FloatSignal fs)
+    : plan(fftwf_plan_dft_c2r_1d(size, cs.data, fs.data, FFTW_ESTIMATE)){}
   ~FFT_BackwardPlan(){fftwf_destroy_plan(this->plan);}
-  // deleted copy- and assignment constructors
-  FFT_BackwardPlan(const FFT_BackwardPlan& copyFrom)=delete;
-  FFT_BackwardPlan& operator= (const FFT_BackwardPlan& copyFrom)=delete;
-  //
   void execute(){fftwf_execute(this->plan);}
 };
 
-  
+
 class Real_XCORR_Manager {
 public:
   //
   FloatSignal s_signal;
   ComplexSignal s_signal_complex;
+  // //
+  // FloatSignal p_signal;
+  // ComplexSignal p_signal_complex;
+  // //
+  // FloatSignal xcorr_signal;
+  // ComplexSignal xcorr_signal_complex;
+  // //
+  // FFT_ForwardPlan plan_forward_s;
+  // FFT_ForwardPlan plan_forward_p;
+  // FFT_BackwardPlan plan_backward_xcorr;
   //
-  FloatSignal p_signal;
-  ComplexSignal p_signal_complex;
-  //
-  FloatSignal xcorr_signal;
-  ComplexSignal xcorr_signal_complex;
-  //
-  FFT_BackwardPlan plan_forward_s;
-  FFT_ForwardPlan plan_forward_p;
-  FFT_BackwardPlan plan_backward_xcorr;
+  // string wisdom_path;
 
   Real_XCORR_Manager(float* signal, const size_t s_size,
                      float* patch, const size_t p_size,
-                     const string wisdom_path="wisdomfile"){
-    if(fftwf_import_wisdom_from_filename(wisdom_path.c_str())==0){
-      cout << "FFTW import wisdom was unsuccessfull. Do you have a valid wisdom in "
-           <<  wisdom_path << "?";
-    }
-    //
-    size_t s_size_padded = pow(2, ceil(log2(s_size)))*2;
-    size_t s_size_complex = s_size_padded/2+1;
-    this->s_signal = FloatSignal(signal, s_size, 0, s_size_padded-s_size);
-    this->s_signal_complex = ComplexSignal(s_size_complex);
-    //
-    size_t p_size_padded = s_size_padded;// pow(2, ceil(log2(p_size)))*2;
-    size_t p_size_complex = p_size_padded/2+1;
-    this->p_signal = FloatSignal(signal, p_size, 0, p_size_padded-p_size);
-    this->p_signal_complex = ComplexSignal(p_size_complex);
-    //
-    this->xcorr_signal = FloatSignal(s_size_padded);
-    this->xcorr_signal_complex = ComplexSignal(s_size_complex);
-    // create the FFT plans
-    this->plan_forward_s = FFT_ForwardPlan(s_size_padded, this->s_signal, this->s_signal_complex);
-    this->plan_forward_p = FFT_ForwardPlan(p_size_padded, this->p_signal, this->p_signal_complex);
-    this->plan_backward_xcorr = FFT_BackwardPlan(s_size_padded, this->xcorr_signal_complex,
-                                                 this->xcorr_signal);
-    // export updated wisdom
-    fftwf_export_wisdom_to_filename(wisdom_path.c_str());
+                     const string wisdom_path="wisdomfile")
+    : s_signal(signal, s_size, 0, pow(2, ceil(log2(s_size)))*2-s_size),
+      s_signal_complex(s_signal.size_padded/2+1)
+      // p_signal(patch, p_size, 0, s_signal.size_padded-p_size),
+      // p_signal_complex(p_signal.size_padded/2+1),
+      // xcorr_signal(s_signal.size_padded),
+      // xcorr_signal_complex(s_signal_complex.size),
+      // plan_forward_s(s_signal.size_padded, s_signal, s_signal_complex),
+      // plan_forward_p(p_signal.size_padded, p_signal, p_signal_complex),
+      // plan_backward_xcorr(xcorr_signal.size_padded, xcorr_signal_complex, xcorr_signal),
+      // wisdom_path(wisdom_path)
+  {
+    // if(fftwf_import_wisdom_from_filename(wisdom_path.c_str())==0){
+    //   cout << "FFTW import wisdom was unsuccessfull. Do you have a valid wisdom in "
+    //        <<  wisdom_path << "?";
+    // }
   }
 
-  void execute_xcorr(){
-    this->plan_forward_s.execute();
-    this->plan_forward_p.execute();
-    fftwf_complex* s = this->s_signal_complex.data;
-    fftwf_complex* p = this->p_signal_complex.data;
-    fftwf_complex* x = this->xcorr_signal_complex.data;
-    const size_t N = this->s_signal_complex.size;
-    x[0][REAL] = s[0][REAL]*p[0][REAL];
-    #pragma omp parallel for
-    for(size_t i=1; i<N; ++i){
-      conjugate_mul(s[i], p[i], x[i]);
-    }
-    this->plan_backward_xcorr.execute();
-  }
+  // void execute_xcorr(){
+  //   this->plan_forward_s.execute();
+  //   this->plan_forward_p.execute();
+  //   fftwf_complex* s = this->s_signal_complex.data;
+  //   fftwf_complex* p = this->p_signal_complex.data;
+  //   fftwf_complex* x = this->xcorr_signal_complex.data;
+  //   const size_t N = this->s_signal_complex.size;
+  //   x[0][REAL] = s[0][REAL]*p[0][REAL];
+  //   // #pragma omp parallel for
+  //   // for(size_t i=1; i<N; ++i){
+  //   //   conjugate_mul(s[i], p[i], x[i]);
+  //   // }
+  //   // this->plan_backward_xcorr.execute();
+  //   // fftwf_export_wisdom_to_filename(this->wisdom_path);
+  // }
 };
 
 
@@ -265,7 +218,6 @@ public:
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 int main(int argc,  char** argv){
-  cout << "start" << endl;
   size_t o_size = 20; // 44100*3;
   float* o = new float[o_size];  for(size_t i=0; i<o_size; ++i){o[i] = i+1;}
   size_t m1_size = 3; // 44100*0.5;
@@ -273,14 +225,15 @@ int main(int argc,  char** argv){
 
   Real_XCORR_Manager manager(o, o_size, m1, m1_size);
 
-  for(int k=0; k<1000; ++k){
-    cout << "iter no "<< k << endl;
-    manager.execute_xcorr();
-  }
-  manager.xcorr_signal.print();
+  // for(int k=0; k<1000; ++k){
+  //   cout << "iter no "<< k << endl;
+  //   manager.execute_xcorr();
+  // }
+  // manager.xcorr_signal.print();
 
   delete[] o;
   delete[] m1;
+  cout << "done!" << endl;
   return 0;
 }
 
