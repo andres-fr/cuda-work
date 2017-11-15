@@ -85,53 +85,68 @@ void conjugate_mul(const fftwf_complex a, const fftwf_complex b, fftwf_complex &
 }
 
 
-class FloatSignal{
-public:
+template <class T>
+class Signal {
+protected:
   size_t size;
-  size_t padding_before;
-  size_t padding_after;
-  size_t size_padded;
-  float* data;
-  explicit FloatSignal(float* data, size_t size, size_t padding_before=0, size_t padding_after= 0)
-    : size(size),
-      padding_before(padding_before),
-      padding_after(padding_after),
-      size_padded(size+padding_before+padding_after),
-      data(fftwf_alloc_real(size_padded)){
-    if(padding_before>0){memset(this->data, 0, sizeof(float)*padding_before);}
-    if(data!=NULL){memcpy(this->data, data, sizeof(fftwf_complex)*size);}
-    if(padding_after>0){memset(this->data+padding_before+size, 0, sizeof(float)*padding_after);}
-  }
-  explicit FloatSignal(size_t size, size_t padding_before=0, size_t padding_after= 0)
-    : FloatSignal(NULL, size, padding_before, padding_after){}
-  ~FloatSignal(){fftwf_free(this->data);}
-  void divideBy(const float x){
-    const size_t start = this->padding_before;
-    const size_t end = start+this->size;
-    #pragma omp parallel for
-    for(size_t i=start; i<end; ++i){this->data[i] /= x;}
-  }
+  T* data;
+public:
+  Signal(size_t size, T* data) : size(size), data(data){};
+  virtual ~Signal(){};
+  size_t getSize(){return this->size;}
+  T* getData(){return this->data;}
+  // T& operator[](int idx){return data[idx];}
+  // T operator[](int idx) const {return data[idx];}
+  // void divideBy(const float x){
+  //   const size_t start = this->padding_before;
+  //   const size_t end = start+this->size;
+  //   #pragma omp parallel for
+  //   for(size_t i=start; i<end; ++i){this->data[i] /= x;}
+  // }
   void print(){
     const float* x = this->data;
-    for(size_t i=0; i<size_padded; ++i){
+    for(size_t i=0; i<size; ++i){
       printf("signal[%zu]=%f", i, x[i]);
     }
   }
 };
 
 
-
-class ComplexSignal{
+class ComplexSignal : public Signal<fftwf_complex>{
 public:
-  size_t size;
-  fftwf_complex* data;
-  explicit ComplexSignal(fftwf_complex* data, size_t size)
-    : size(size), data(fftwf_alloc_complex(size)) {
-    if(data!=NULL){memcpy(this->data, data, sizeof(fftwf_complex)*size);}
+  explicit ComplexSignal(size_t size)
+    : Signal(size, fftwf_alloc_complex(size)){};
+  explicit ComplexSignal(fftwf_complex* data, size_t size) :ComplexSignal(size){
+    memcpy(this->data, data, sizeof(fftwf_complex)*size);
   }
-  explicit ComplexSignal(size_t size) : ComplexSignal(NULL, size){}
   ~ComplexSignal(){fftwf_free(this->data);}
 };
+
+class FloatSignal : public Signal<float>{
+private:
+  size_t set_and_return_size_padded(size_t sz, size_t p_bef, size_t p_aft){
+    this->size_padded = sz+p_bef+p_aft;
+    return this->size_padded;
+  }
+public:
+  size_t padding_before;
+  size_t padding_after;
+  size_t size_padded;
+  explicit FloatSignal(size_t size, size_t padding_before=0, size_t padding_after= 0)
+    : Signal(size, fftwf_alloc_real(set_and_return_size_padded(size, padding_before,padding_after))),
+      padding_before(padding_before),
+      padding_after(padding_after){};
+  explicit FloatSignal(float* data, size_t size, size_t padding_before=0, size_t padding_after= 0)
+    : FloatSignal(size, padding_before, padding_after){
+    if(padding_before>0){memset(this->data, 0, sizeof(float)*padding_before);}
+    if(data!=NULL){memcpy(this->data, data, sizeof(fftwf_complex)*size);}
+    if(padding_after>0){memset(this->data+padding_before+size, 0, sizeof(float)*padding_after);}
+  }
+  ~FloatSignal(){fftwf_free(this->data);}
+};
+
+
+
 
 
 
@@ -140,7 +155,7 @@ private:
   fftwf_plan plan;
 public:
   explicit FFT_ForwardPlan(size_t size, FloatSignal fs, ComplexSignal cs)
-    : plan(fftwf_plan_dft_r2c_1d(size, fs.data, cs.data, FFTW_ESTIMATE)){}
+    : plan(fftwf_plan_dft_r2c_1d(size, fs.getData(), cs.getData(), FFTW_ESTIMATE)){}
   ~FFT_ForwardPlan(){fftwf_destroy_plan(this->plan);}
   void execute(){fftwf_execute(this->plan);}
 };
@@ -151,7 +166,7 @@ private:
   fftwf_plan plan;
 public:
   explicit FFT_BackwardPlan(size_t size, ComplexSignal cs, FloatSignal fs)
-    : plan(fftwf_plan_dft_c2r_1d(size, cs.data, fs.data, FFTW_ESTIMATE)){}
+    : plan(fftwf_plan_dft_c2r_1d(size, cs.getData(), fs.getData(), FFTW_ESTIMATE)){}
   ~FFT_BackwardPlan(){fftwf_destroy_plan(this->plan);}
   void execute(){fftwf_execute(this->plan);}
 };
