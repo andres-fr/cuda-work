@@ -159,7 +159,7 @@ public:
 class FFT_ForwardPlan : public FFT_Plan{
 public:
   explicit FFT_ForwardPlan(size_t size, FloatSignal fs, ComplexSignal cs)
-    : FFT_Plan(fftwf_plan_dft_r2c_1d(size, fs.getData(), cs.getData(), FFTW_ESTIMATE)){}
+    : FFT_Plan(fftwf_plan_dft_r2c_1d(size, fftwf_alloc_real(10000), fftwf_alloc_complex(5001), FFTW_ESTIMATE)){} //  // fftwf_plan_dft_r2c_1d(size, fs.getData(), cs.getData(), FFTW_ESTIMATE)
 };
 
 class FFT_BackwardPlan : public FFT_Plan{
@@ -174,57 +174,57 @@ public:
   //
   FloatSignal s_signal;
   ComplexSignal s_signal_complex;
-  //
-  FloatSignal p_signal;
-  ComplexSignal p_signal_complex;
-  //
-  FloatSignal xcorr_signal;
-  ComplexSignal xcorr_signal_complex;
-  //
+  // //
+  // FloatSignal p_signal;
+  // ComplexSignal p_signal_complex;
+  // //
+  // FloatSignal xcorr_signal;
+  // ComplexSignal xcorr_signal_complex;
+  // //
   FFT_ForwardPlan plan_forward_s;
-  FFT_ForwardPlan plan_forward_p;
-  FFT_BackwardPlan plan_backward_xcorr;
-  //
-  string wisdom_path;
-  bool with_wisdom;
+  // FFT_ForwardPlan plan_forward_p;
+  // FFT_BackwardPlan plan_backward_xcorr;
+  // //
+  // string wisdom_path;
+  // bool with_wisdom;
 
   Real_XCORR_Manager(float* signal, const size_t s_size,
                      float* patch, const size_t p_size,
                      const string wisdom_path="")
     : s_signal(signal, s_size, 0, pow(2, ceil(log2(s_size)))*2-s_size),
       s_signal_complex(s_signal.getSizePadded()/2+1),
-      p_signal(patch, p_size, 0, s_signal.getSizePadded()-p_size),
-      p_signal_complex(p_signal.getSizePadded()/2+1),
-      xcorr_signal(s_signal.getSizePadded()),
-      xcorr_signal_complex(s_signal_complex.getSize()),
-      plan_forward_s(s_signal.getSizePadded(), s_signal, s_signal_complex),
-      plan_forward_p(p_signal.getSizePadded(), p_signal, p_signal_complex),
-      plan_backward_xcorr(xcorr_signal.getSizePadded(), xcorr_signal_complex, xcorr_signal),
-      wisdom_path(wisdom_path),
-      with_wisdom(!wisdom_path.empty())
+      // p_signal(patch, p_size, 0, s_signal.getSizePadded()-p_size),
+      // p_signal_complex(p_signal.getSizePadded()/2+1),
+      // xcorr_signal(s_signal.getSizePadded()),
+      // xcorr_signal_complex(s_signal_complex.getSize()),
+      plan_forward_s(s_signal.getSizePadded(), s_signal, s_signal_complex)
+      // plan_forward_p(p_signal.getSizePadded(), p_signal, p_signal_complex),
+      // plan_backward_xcorr(xcorr_signal.getSizePadded(), xcorr_signal_complex, xcorr_signal),
+      // wisdom_path(wisdom_path),
+      // with_wisdom(!wisdom_path.empty())
   {
-    if(this->with_wisdom && fftwf_import_wisdom_from_filename(wisdom_path.c_str())==0){
-      cout << "FFTW import wisdom was unsuccessfull. Is this ->"
-           <<  wisdom_path << "<- a path to a valid FFTW wisdom file?";
-      this->with_wisdom = false;
-    }
+    // if(this->with_wisdom && fftwf_import_wisdom_from_filename(wisdom_path.c_str())==0){
+    //   cout << "FFTW import wisdom was unsuccessfull. Is this ->"
+    //        <<  wisdom_path << "<- a path to a valid FFTW wisdom file?";
+    //   this->with_wisdom = false;
+    // }
   }
 
-  void execute_xcorr(){
-    this->plan_forward_s.execute();
-    this->plan_forward_p.execute();
-    fftwf_complex* s = this->s_signal_complex.getData();
-    fftwf_complex* p = this->p_signal_complex.getData();
-    fftwf_complex* x = this->xcorr_signal_complex.getData();
-    const size_t N = this->s_signal_complex.getSize();
-    x[0][REAL] = s[0][REAL]*p[0][REAL];
-    #pragma omp parallel for
-    for(size_t i=1; i<N; ++i){
-      conjugate_mul(s[i], p[i], x[i]);
-    }
-    this->plan_backward_xcorr.execute();
-    if(this->with_wisdom){fftwf_export_wisdom_to_filename(this->wisdom_path.c_str());}
-  }
+  // void execute_xcorr(){
+  //   this->plan_forward_s.execute();
+  //   this->plan_forward_p.execute();
+  //   fftwf_complex* s = this->s_signal_complex.getData();
+  //   fftwf_complex* p = this->p_signal_complex.getData();
+  //   fftwf_complex* x = this->xcorr_signal_complex.getData();
+  //   const size_t N = this->s_signal_complex.getSize();
+  //   x[0][REAL] = s[0][REAL]*p[0][REAL];
+  //   #pragma omp parallel for
+  //   for(size_t i=1; i<N; ++i){
+  //     conjugate_mul(s[i], p[i], x[i]);
+  //   }
+  //   this->plan_backward_xcorr.execute();
+  //   if(this->with_wisdom){fftwf_export_wisdom_to_filename(this->wisdom_path.c_str());}
+  // }
 };
 
 
@@ -238,13 +238,15 @@ int main(int argc,  char** argv){
   size_t m1_size = 3; // 44100*0.5;
   float* m1 = new float[m1_size]; for(size_t i=0; i<m1_size; ++i){m1[i]=1;}
 
-  Real_XCORR_Manager manager(o, o_size, m1, m1_size);
+  fftwf_plan p = fftwf_plan_dft_r2c_1d(20, fftwf_alloc_real(10000), fftwf_alloc_complex(5001), FFTW_ESTIMATE);
 
-  for(int k=0; k<10000; ++k){
-    cout << "iter no "<< k << endl;
-    manager.execute_xcorr();
-  }
-  manager.xcorr_signal.print();
+  // Real_XCORR_Manager manager(o, o_size, m1, m1_size);
+
+  // for(int k=0; k<100; ++k){
+  //   cout << "iter no "<< k << endl;
+  //   manager.execute_xcorr();
+  // }
+  // manager.xcorr_signal.print();
 
   delete[] o;
   delete[] m1;
