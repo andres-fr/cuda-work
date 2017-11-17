@@ -317,60 +317,100 @@ public:
 
 
 class OverlapSaveXCORR {
-protected:
-  // class ConvStruct{
-  // public:
-  //   // the patch
-  //   FloatSignal &p;
-  //   ComplexSignal p_complex;
-  //   // the corresponding plans
-  //   vector<FFT_ForwardPlan> forward_plans;
-  //   vector<FFT_BackwardPlan> backward_plans;
-  //   ConvStruct(FloatSignal &patch, vector<FloatSignal> s_chunks, vector<ComplexSignal> s_chunks_complex)
-  //     : p(patch){
-  //     for(auto it = s_chunks.begin(); it!=s_chunks.end(); ++it){
-
-  //     }
-  //   }
-  // };
+private:
+  size_t xcorr_chunksize;
+  size_t xcorr_chunksize_complex;
+  size_t xcorr_stride;
 public:
+  // padded copies of the inputs
+  FloatSignal padded_signal;
+  FloatSignal padded_patch;
+  ComplexSignal padded_patch_complex;
   // the deconstructed signal
   vector<FloatSignal*> s_chunks;
   vector<ComplexSignal*> s_chunks_complex;
+  // the corresponding xcorrs
+  vector<FloatSignal*> xcorr_chunks;
+  vector<ComplexSignal*> xcorr_chunks_complex;
+  // the corresponding plans (plus the plan of the patch)
+  vector<FFT_ForwardPlan*> forward_plans;
+  vector<FFT_BackwardPlan*> backward_plans;
   //
-  // ConvStruct conv_struct;
-  //
-  // FloatSignal xcorr;
-  // ComplexSignal xcorr_complex;
-  //
-  OverlapSaveXCORR(FloatSignal &signal, FloatSignal &patch, const string wisdomPath=""){
-    if(!wisdomPath.empty()){
-      import_fftw_wisdom(wisdomPath, false);
+  OverlapSaveXCORR(FloatSignal &signal, FloatSignal &patch, const string wisdomPath="")
+    : padded_signal(signal.getData(), signal.getSize(), patch.getSize()-1, 0),
+      padded_patch(patch.getData(), patch.getSize(), 0, pow2_ceil(patch.getSize())*2-patch.getSize()),
+      padded_patch_complex(padded_patch.getSize()/2+1){
+    if(!wisdomPath.empty()){import_fftw_wisdom(wisdomPath, false);}
+    // chunk the signal into strides of same size as padded patch
+    // and make complex counterparts too, as well as the corresponding xcorr signals
+    this->xcorr_chunksize = padded_patch.getSize();
+    this->xcorr_chunksize_complex = xcorr_chunksize/2+1;
+    this->xcorr_stride = xcorr_chunksize-patch.getSize()+1;
+    for(size_t i=0; i<=padded_signal.getSize()-xcorr_chunksize; i+=xcorr_stride){
+      s_chunks.push_back(new FloatSignal(&padded_signal[i], xcorr_chunksize));
+      s_chunks_complex.push_back(new ComplexSignal(xcorr_chunksize_complex));
+      xcorr_chunks.push_back(new FloatSignal(xcorr_chunksize));
+      xcorr_chunks_complex.push_back(new ComplexSignal(xcorr_chunksize_complex));
     }
-    FloatSignal padded_signal(signal.getData(), signal.getSize(), patch.getSize()-1, 0);
-    FloatSignal padded_patch = FloatSignal(patch.getData(), patch.getSize(), 0, pow2_ceil(patch.getSize())*2-patch.getSize());
-    padded_patch.print("patch");
-    // load the s_chunks vector, they have length patch.size and desplaza by L
-    size_t X = padded_patch.getSize();
-    size_t X_complex = X/2+1;
-    size_t L = X-patch.getSize()+1;
-    //
-    for(size_t i=0; i<=padded_signal.getSize()-X; i+=L){
-      s_chunks.push_back(new FloatSignal(&padded_signal[i], X));
-      s_chunks_complex.push_back(new ComplexSignal(X_complex));
-    }
+    // make one forward plan per signal chunk, and one for the patch
+    // Also backward plans for the xcorr chunks
+    forward_plans.push_back(new FFT_ForwardPlan(xcorr_chunksize, padded_patch, padded_patch_complex));
     for (size_t i =0; i<s_chunks.size();i++){
-      s_chunks[i]->print(string("Signal")+to_string(i));
+      forward_plans.push_back(new FFT_ForwardPlan(xcorr_chunksize, *s_chunks.at(i), *s_chunks_complex.at(i)));
+      backward_plans.push_back(new FFT_BackwardPlan(xcorr_chunksize, *xcorr_chunks_complex.at(i), *xcorr_chunks.at(i)));
+    }
+  }
+  void execute_xcorr(){
+    // do ffts
+    #ifdef WITH_OPENMP_ABOVE
+    #pragma omp parallel for schedule(static, WITH_OPENMP_ABOVE)
+    #endif
+    for (size_t i =0; i<forward_plans.size();i++){
+      forward_plans.at(i)->execute();
+    }
+    // multiply spectra
+    #ifdef WITH_OPENMP_ABOVE
+    #pragma omp parallel for schedule(static, WITH_OPENMP_ABOVE)
+    #endif
+    for (size_t i =0; i<xcorr_chunks.size();i++){
+      spectral_correlation(*s_chunks_complex.at(i), this->padded_patch_complex, *xcorr_chunks_complex.at(i));
+    }
+    // do iffts
+    #ifdef WITH_OPENMP_ABOVE
+    #pragma omp parallel for schedule(static, WITH_OPENMP_ABOVE)
+    #endif
+    for (size_t i =0; i<xcorr_chunks.size();i++){
+      backward_plans.at(i)->execute();
+      *xcorr_chunks.at(i) /= this->xcorr_chunksize;
     }
 
+    for (size_t i =0; i<xcorr_chunks.size();i++){
+      xcorr_chunks.at(i)->print(string("XCORR"+to_string(i)));
+    }
   }
   ~OverlapSaveXCORR(){
+    // clear vectors holding signals
     for (size_t i =0; i<s_chunks.size();i++){
-      delete (s_chunks[i]);
-      delete (s_chunks_complex[i]);
+      delete (s_chunks.at(i));
+      delete (s_chunks_complex.at(i));
+      delete (xcorr_chunks.at(i));
+      delete (xcorr_chunks_complex.at(i));
     }
     s_chunks.clear();
     s_chunks_complex.clear();
+    xcorr_chunks.clear();
+    xcorr_chunks_complex.clear();
+    // clear vector holding forward FFT plans
+    for (size_t i =0; i<forward_plans.size();i++){
+      delete (forward_plans.at(i));
+    }
+    forward_plans.clear();
+    // clear vector holding backward FFT plans
+    for (size_t i =0; i<backward_plans.size();i++){
+      delete (backward_plans.at(i));
+    }
+    backward_plans.clear();
+
   }
 };
 
@@ -381,9 +421,9 @@ public:
 int main(int argc,  char** argv){
   const string wisdomPatient = "wisdom_real_dft_pow2_patient"; // make_and_export_fftw_wisdom(wisdomPatient, 0, 29, FFTW_PATIENT);
 
-  size_t o_size = 20;//44100*10;
+  size_t o_size = 10;//44100*10;
   float* o = new float[o_size];  for(size_t i=0; i<o_size; ++i){o[i] = i+1;}
-  size_t m1_size = 7;//44100*1;
+  size_t m1_size = 4;//44100*1;
   float* m1 = new float[m1_size]; for(size_t i=0; i<m1_size; ++i){m1[i]=1;}
   size_t xcorr_size = pow2_ceil(o_size+m1_size);
 
@@ -391,6 +431,7 @@ int main(int argc,  char** argv){
   FloatSignal p(m1, m1_size);
 
   OverlapSaveXCORR x(s, p);
+  x.execute_xcorr();
   // SimpleXCORR sxc(s, p, wisdomPatient);
   // for(int k=0; k<10; ++k){
   //   cout << "iter no "<< k << endl;
@@ -424,3 +465,6 @@ int main(int argc,  char** argv){
 // BUG: calling FloatSignal(arr, size) where arr is a fftwf_alloc_real array causes the sys to freeze
 // benchmark memset vs. multithreaded set USE A PROPER BENCHMARKING LIB
 //
+
+
+// TODO: now circular conv almost working, extra block seems to be missing.
