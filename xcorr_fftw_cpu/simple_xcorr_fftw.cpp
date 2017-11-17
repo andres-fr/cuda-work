@@ -2,10 +2,10 @@
 //    fftwf-wisdom -v -c -o wisdomfile DOESNT WORK! BAD FORMATTING? IS IT FFTW2?
 //
 // 2) compile and check run with valgrind (has "possibly lost" due to openMP, but it is ok)
-//  g++ -Wall -Wextra xcorr_fftw.cpp -fopenmp -lfftw3f -o test && valgrind --leak-check=full -v  ./test
+//  g++ -Wall -Wextra simple_xcorr_fftw.cpp -fopenmp -lfftw3f -o test && valgrind --leak-check=full -v  ./test
 
 // 3) run
-// g++ -O3 -std=c++11 -Wall -Wextra xcorr_fftw.cpp -fopenmp -lfftw3f -o test && valgrind --leak-check=full -v ./test
+// g++ -O3 -std=c++11 -Wall -Wextra simple_xcorr_fftw.cpp -fopenmp -lfftw3f -o test && valgrind --leak-check=full -v ./test
 
 #include <string.h>
 #include <math.h>
@@ -38,23 +38,6 @@ using namespace std;
 /// HELPERS
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-
-// string get_file_contents(const char *filename)
-// {
-//   ifstream in(filename, ios::in | ios::binary);
-//   if (in){
-//     std::string contents;
-//     in.seekg(0, ios::end);
-//     contents.resize(in.tellg());
-//     in.seekg(0, ios::beg);
-//     in.read(&contents[0], contents.size());
-//     in.close();
-//     return(contents);
-//   }
-//   throw(errno);
-// }
-
-
 size_t pow2_ceil(size_t x){
   return pow(2, ceil(log2(x)));
 }
@@ -70,7 +53,6 @@ void conjugate_mul(const fftwf_complex &a, const fftwf_complex &b, fftwf_complex
   result[REAL] = a[REAL]*b[REAL] + a[IMAG]*b[IMAG];
   result[IMAG] = a[IMAG]*b[REAL] - a[REAL]*b[IMAG];
 }
-
 
 
 template <class T>
@@ -176,7 +158,7 @@ public:
 };
 
 
-class SimpleXCORR {
+class Real_XCORR_Manager {
 public:
   //
   FloatSignal &s;
@@ -191,8 +173,8 @@ public:
   FFT_ForwardPlan plan_forward_s;
   FFT_ForwardPlan plan_forward_p;
   FFT_BackwardPlan plan_backward_xcorr;
-  ~SimpleXCORR(){}
-  SimpleXCORR(FloatSignal &signal, FloatSignal &patch)
+  ~Real_XCORR_Manager(){}
+  Real_XCORR_Manager(FloatSignal &signal, FloatSignal &patch)
     : s(signal),
       s_complex(ComplexSignal(signal.getSize()/2+1)),
       p(patch),
@@ -213,16 +195,9 @@ public:
     }
     this->plan_backward_xcorr.execute();
     this->xcorr /= this->xcorr.getSize();
+    // fftwf_export_wisdom_to_filename(this->wisdom_path.c_str());
   }
 };
-
-
-// class OverlapSaveXCORR : public SimpleXCORR{
-// private:
-//   OverlapSaveXCORR(FloatSignal &signal, FloatSignal &patch){
-
-//   }
-// }
 
 
 
@@ -233,24 +208,24 @@ public:
 int main(int argc,  char** argv){
 
 
-  size_t o_size = 16;
+  size_t o_size = 10;
   float* o = new float[o_size];  for(size_t i=0; i<o_size; ++i){o[i] = i+1;}
-  size_t m1_size = 10;
+  size_t m1_size = 4;
   float* m1 = new float[m1_size]; for(size_t i=0; i<m1_size; ++i){m1[i]=1;}
 
 
-  size_t xcorr_size = pow2_ceil(o_size+m1_size);
+  size_t xcorr_size = pow2_ceil(o_size)*2;
 
   FloatSignal s(o, o_size, 0, xcorr_size-o_size);
   FloatSignal p(m1, m1_size, 0, xcorr_size-m1_size);
 
-  SimpleXCORR sxc(s, p);
+  Real_XCORR_Manager manager(s, p);
 
   // for(int k=0; k<100; ++k){
   //   cout << "iter no "<< k << endl;
-  sxc.execute_xcorr();
+  manager.execute_xcorr();
   // }
-  sxc.xcorr.print("XCORR");
+  manager.xcorr.print("XCORR");
 
   // FloatSignal(size_t size, size_t padding_before=0, size_t padding_after= 0)
 
@@ -305,3 +280,127 @@ int main(int argc,  char** argv){
 // 5. calculas las FFT del original, con overlapping! es decir i=i+L
 // 6. multiplicas cada uno de los chirmes, e inviertes el resultado
 // 7. de cada invertido, descartas los primeros (M-1), y concatenas todo
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+/// BENCHMARKING / UNIT TESTING
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+// class SimpleBenchmark{
+// private:
+//   const string name;
+//   const size_t num_repetitions;
+// public:
+//   virtual ~SimpleBenchmark(){}
+//   virtual void function1(size_t i){
+//     cout << "function 1" << endl;
+//   }
+//   virtual void function2(size_t i){
+//     cout << "function 2" << endl;
+//   }
+//   SimpleBenchmark(const string name, const size_t num_repetitions=10*1000*1000)
+//     :name(name), num_repetitions(num_repetitions){};
+//   {
+//     // MEASUREMENT OF FUNCTION 1
+//   TStopwatch timer1;
+//   for(size_t i = 0; i<num_repetitions ; ++i) {
+//     this->function1(i);
+//   }
+//   timer1.Stop();
+//   // MEASUREMENT OF FUNCTION 2
+//   TStopwatch timer2;
+//   for(size_t i = 0; i<num_repetitions ; ++i) {
+//     this->function2(i);
+//   }
+//   timer2.Stop();
+//   //
+//   double t1 = timer1.RealTime()*1000;
+//   printf("BENCHMARK <%s> (%zu repetitions):\n", name.c_str(), num_repetitions);
+//   printf("\ttime of function 1 (ms): %f\n", timer1.RealTime()*1000);
+//   printf("\ttime of function 2 (ms): %f\n", timer2.RealTime()*1000);
+//   }
+// };
+
+
+
+// void benchmark_signal_accessor(const size_t num_repetitions=10000000){
+//   const size_t arr_size = 10;
+//   float* arr = new float[arr_size];  for(size_t i=0; i<arr_size; ++i){arr[i] = i+1;}
+//   FloatSignal s(arr, arr_size);
+//   //
+//   float result1 = 0;
+//   float result2 = 0;
+//   // MEASURE DIRECT ACCESS TO THE ARRAY HELD BY THE SIGNAL
+//   TStopwatch timer1;
+//   float* a = s.getData();
+//   for(size_t i = 0; i<num_repetitions ; ++i) {
+//     result1 += a[i%arr_size];
+//   }
+//   timer1.Stop();
+//   // MEASURE ACCESS THROUGH THE OVERLOADED [] OPERATOR
+//   TStopwatch timer2;
+//   for(size_t i = 0; i<num_repetitions ; ++i) {
+//     result2 += s[i%arr_size];
+//   }
+//   timer2.Stop();
+//   //
+//   double t1 = timer1.RealTime()*1000;
+//   printf("BENCHMARK SINAL ACCESSOR (%zu repetitions):\n", num_repetitions);
+//   cout << result1 << "<<< result, time >>>" << t1 << " ms " << endl;
+//   double t2 = timer1.RealTime()*1000;
+//   cout << result2 << " <<<result, time>>>" << t2 << " ms " << endl;
+//   //
+//   delete[] arr;
+// }
+
+
+
+
+// // implement this for energy... test also Vc! and measure speedup
+// float sum(const float *a, size_t n)
+// {
+//     float total = 0.;
+
+//     #pragma omp parallel for reduction(+:total)
+//     for (size_t i = 0; i < n; i++) {
+//         total += a[i];
+//     }
+//     return total;
+// }
+
+
+
+
+
+// string get_file_contents(const char *filename)
+// {
+//   ifstream in(filename, ios::in | ios::binary);
+//   if (in){
+//     std::string contents;
+//     in.seekg(0, ios::end);
+//     contents.resize(in.tellg());
+//     in.seekg(0, ios::beg);
+//     in.read(&contents[0], contents.size());
+//     in.close();
+//     return(contents);
+//   }
+//   throw(errno);
+// }
