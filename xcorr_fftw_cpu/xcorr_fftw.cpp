@@ -18,15 +18,15 @@
 
 #include "catch.hpp"
 #include "TStopwatch.h"
-// #include <fstream>
-// #include <cerrno>
+#include <fstream>
+#include <cerrno>
 
 // #include<vector>
 // #include<assert.h>
 
 #define REAL 0
 #define IMAG 1
-#define OMP_MIN_VALUE 1024 // this has to be benchmarked
+#define OMP_MIN_VALUE 128 // this has to be benchmarked
 
 using namespace std;
 
@@ -39,21 +39,21 @@ using namespace std;
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 
-// string get_file_contents(const char *filename)
-// {
-//   ifstream in(filename, ios::in | ios::binary);
-//   if (in){
-//     std::string contents;
-//     in.seekg(0, ios::end);
-//     contents.resize(in.tellg());
-//     in.seekg(0, ios::beg);
-//     in.read(&contents[0], contents.size());
-//     in.close();
-//     return(contents);
-//   }
-//   throw(errno);
-// }
+string get_file_contents(const char *filename){
+  ifstream in(filename, ios::in | ios::binary);
+  if (in){
+    std::string contents;
+    in.seekg(0, ios::end);
+    contents.resize(in.tellg());
+    in.seekg(0, ios::beg);
+    in.read(&contents[0], contents.size());
+    in.close();
+    return(contents);
+  }
+  throw(errno);
+}
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 size_t pow2_ceil(size_t x){
   return pow(2, ceil(log2(x)));
@@ -71,7 +71,7 @@ void conjugate_mul(const fftwf_complex &a, const fftwf_complex &b, fftwf_complex
   result[IMAG] = a[IMAG]*b[REAL] - a[REAL]*b[IMAG];
 }
 
-
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 template <class T>
 class Signal {
@@ -154,6 +154,8 @@ public:
   }
 };
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
 class FFT_Plan{
 private:
   fftwf_plan plan;
@@ -175,6 +177,37 @@ public:
     : FFT_Plan(fftwf_plan_dft_c2r_1d(size, cs.getData(), fs.getData(), FFTW_ESTIMATE)){}
 };
 
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+void make_and_export_fftw_wisdom(const string path_out, const size_t min_2pow=0,
+                        const size_t max_2pow=25, const unsigned flag=FFTW_PATIENT){
+  for(size_t i=min_2pow; i<=max_2pow; ++i){
+    size_t size = pow(2, i);
+    FloatSignal fs(size);
+    ComplexSignal cs(size/2+1);
+    printf("creating forward and backward plans for size=2**%zu=%zu and flag %u...\n", i, size, flag);
+    FFT_ForwardPlan fwd(size, fs, cs);
+    FFT_BackwardPlan bwd(size, cs, fs);
+  }
+  fftwf_export_wisdom_to_filename(path_out.c_str());
+}
+
+void import_fftw_wisdom(const string path_in, const bool throw_exception_if_fail=true){
+  int result = fftwf_import_wisdom_from_filename(path_in.c_str());
+  if(result!=0){
+    cout << "[import_fftw_wisdom] succesfully imported " << path_in << endl;
+
+  } else{
+    string message = "[import_fftw_wisdom] ";
+    message += "couldn't import wisdom! is this a path to a valid wisdom file? -->"+path_in+"<--\n";
+    if(throw_exception_if_fail){throw runtime_error(string("ERROR: ") + message);}
+    else{cout << "WARNING: " << message;}
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+/// PERFORM CONVOLUTION/CORRELATION
+////////////////////////////////////////////////////////////////////////////////////////////////////
 
 class SimpleXCORR {
 public:
@@ -192,7 +225,7 @@ public:
   FFT_ForwardPlan plan_forward_p;
   FFT_BackwardPlan plan_backward_xcorr;
   ~SimpleXCORR(){}
-  SimpleXCORR(FloatSignal &signal, FloatSignal &patch)
+  SimpleXCORR(FloatSignal &signal, FloatSignal &patch, const string wisdomPath="")
     : s(signal),
       s_complex(ComplexSignal(signal.getSize()/2+1)),
       p(patch),
@@ -201,7 +234,11 @@ public:
       xcorr_complex(xcorr.getSize()/2+1),
       plan_forward_s(signal.getSize(), signal, s_complex),
       plan_forward_p(p.getSize(), p, p_complex),
-      plan_backward_xcorr(xcorr.getSize(), xcorr_complex, xcorr){}
+      plan_backward_xcorr(xcorr.getSize(), xcorr_complex, xcorr){
+    if(!wisdomPath.empty()){
+      import_fftw_wisdom(wisdomPath, false);
+    }
+  }
   void execute_xcorr(){
     this->plan_forward_s.execute();
     this->plan_forward_p.execute();
@@ -226,52 +263,35 @@ public:
 
 
 
+
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 /// MAIN ROUTINE
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 int main(int argc,  char** argv){
+  const string wisdomPatient = "wisdom_real_dft_pow2_patient"; // make_and_export_fftw_wisdom(wisdomPatient, 0, 29, FFTW_PATIENT);
 
-
-  size_t o_size = 16;
+  size_t o_size = 44100*10;
   float* o = new float[o_size];  for(size_t i=0; i<o_size; ++i){o[i] = i+1;}
-  size_t m1_size = 10;
+  size_t m1_size = 44100*1;
   float* m1 = new float[m1_size]; for(size_t i=0; i<m1_size; ++i){m1[i]=1;}
-
-
   size_t xcorr_size = pow2_ceil(o_size+m1_size);
 
   FloatSignal s(o, o_size, 0, xcorr_size-o_size);
   FloatSignal p(m1, m1_size, 0, xcorr_size-m1_size);
+  SimpleXCORR sxc(s, p, wisdomPatient);
 
-  SimpleXCORR sxc(s, p);
-
-  // for(int k=0; k<100; ++k){
-  //   cout << "iter no "<< k << endl;
-  sxc.execute_xcorr();
-  // }
-  sxc.xcorr.print("XCORR");
-
-  // FloatSignal(size_t size, size_t padding_before=0, size_t padding_after= 0)
-
-  // // FloatSignal s(o, o_size, 0, pow(2, ceil(log2(o_size)))*2-o_size);
-  // // ComplexSignal c(11);
-  // // FFT_ForwardPlan pp(20, s, c);
-
-  // FloatSignal d(o, o_size);
-  // ComplexSignal e(o_size/2+1);
-  // FFT_ForwardPlan(o_size, d, e);
-  // // FFT_ForwardPlan k(o_size, d, e);
-  // // FFT_Plan pp(fftwf_plan_dft_r2c_1d(o_size, d.getData(), e.getData(), FFTW_ESTIMATE));
-  // // fftwf_execute(p);
-  // // fftwf_destroy_plan(p);
-
-
-
+  for(int k=0; k<10; ++k){
+    cout << "iter no "<< k << endl;
+    sxc.execute_xcorr();
+  }
+  // sxc.xcorr.print("XCORR");
 
   delete[] o;
   delete[] m1;
-  cout << "done!" << endl;
+
+
+
   return 0;
 
 }
