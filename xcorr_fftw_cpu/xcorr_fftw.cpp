@@ -323,9 +323,9 @@ private:
   size_t xcorr_stride;
 public:
   // padded copies of the inputs
-  FloatSignal padded_signal;
   FloatSignal padded_patch;
   ComplexSignal padded_patch_complex;
+  FloatSignal padded_signal;
   // the deconstructed signal
   vector<FloatSignal*> s_chunks;
   vector<ComplexSignal*> s_chunks_complex;
@@ -337,9 +337,9 @@ public:
   vector<FFT_BackwardPlan*> backward_plans;
   //
   OverlapSaveXCORR(FloatSignal &signal, FloatSignal &patch, const string wisdomPath="")
-    : padded_signal(signal.getData(), signal.getSize(), patch.getSize()-1, 0),
-      padded_patch(patch.getData(), patch.getSize(), 0, pow2_ceil(patch.getSize())*2-patch.getSize()),
-      padded_patch_complex(padded_patch.getSize()/2+1){
+    : padded_patch(patch.getData(), patch.getSize(), 0, pow2_ceil(patch.getSize())*2-patch.getSize()),
+      padded_patch_complex(padded_patch.getSize()/2+1),
+      padded_signal(signal.getData(), signal.getSize(), patch.getSize()-1, padded_patch.getSize()){
     if(!wisdomPath.empty()){import_fftw_wisdom(wisdomPath, false);}
     // chunk the signal into strides of same size as padded patch
     // and make complex counterparts too, as well as the corresponding xcorr signals
@@ -421,9 +421,9 @@ public:
 int main(int argc,  char** argv){
   const string wisdomPatient = "wisdom_real_dft_pow2_patient"; // make_and_export_fftw_wisdom(wisdomPatient, 0, 29, FFTW_PATIENT);
 
-  size_t o_size = 10;//44100*10;
+  size_t o_size = 20;//44100*10;
   float* o = new float[o_size];  for(size_t i=0; i<o_size; ++i){o[i] = i+1;}
-  size_t m1_size = 4;//44100*1;
+  size_t m1_size = 3;//44100*1;
   float* m1 = new float[m1_size]; for(size_t i=0; i<m1_size; ++i){m1[i]=1;}
   size_t xcorr_size = pow2_ceil(o_size+m1_size);
 
