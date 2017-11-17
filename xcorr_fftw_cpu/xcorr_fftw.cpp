@@ -7,13 +7,18 @@
 // 3) run
 // g++ -O3 -std=c++11 -Wall -Wextra xcorr_fftw.cpp -fopenmp -lfftw3f -o test && valgrind --leak-check=full -v ./test
 
+
+
+#define REAL 0
+#define IMAG 1
+//#define WITH_OPENMP_ABOVE 128 // minsize of a for loop that gets sent to OMP (has to be benchmarked!)
+
+
 #include <string.h>
 #include <math.h>
 // #include <time.h>
 #include <iostream>
 #include <stdexcept>
-#include <omp.h>
-
 #include <fftw3.h>
 
 #include "catch.hpp"
@@ -24,9 +29,10 @@
 // #include<vector>
 // #include<assert.h>
 
-#define REAL 0
-#define IMAG 1
-#define OMP_MIN_VALUE 128 // this has to be benchmarked
+
+ #ifdef WITH_OPENMP_ABOVE
+ # include <omp.h>
+ #endif
 
 using namespace std;
 
@@ -90,6 +96,7 @@ public:
   T &operator[](size_t idx) const {return data[idx];}
   //
   void print(const string name="signal"){
+    cout << endl;
     for(size_t i=0; i<size; ++i){
       cout << name << "[" << i << "]\t=\t" << this->data[i] << endl;
     }
@@ -104,22 +111,28 @@ public:
   explicit FloatSignal(float* d, size_t size) : FloatSignal(size){
     memcpy(this->data, d, sizeof(float)*size);
   }
-  explicit FloatSignal(float* d, size_t size, size_t pad_bef, size_t pad_aft)
-    : FloatSignal(size+pad_bef+pad_aft){
-    memcpy(this->data+pad_bef, d, sizeof(float)*size);
+  explicit FloatSignal(float* d, size_t sz, size_t pad_bef, size_t pad_aft)
+    : FloatSignal(sz+pad_bef+pad_aft){
+    memcpy(this->data+pad_bef, d, sizeof(float)*sz);
   }
   ~FloatSignal() {fftwf_free(this->data);}
   //
   void operator+=(const float x){
-    #pragma omp parallel for schedule(static, OMP_MIN_VALUE)
+    #ifdef WITH_OPENMP_ABOVE
+    #pragma omp parallel for schedule(static, WITH_OPENMP_ABOVE)
+    #endif
     for(size_t i=0; i<this->size; ++i){this->data[i] += x;}
   }
   void operator*=(const float x){
-    #pragma omp parallel for schedule(static, OMP_MIN_VALUE)
+    #ifdef WITH_OPENMP_ABOVE
+    #pragma omp parallel for schedule(static, WITH_OPENMP_ABOVE)
+    #endif
     for(size_t i=0; i<this->size; ++i){this->data[i] *= x;}
   }
   void operator/=(const float x){
-    #pragma omp parallel for schedule(static, OMP_MIN_VALUE)
+    #ifdef WITH_OPENMP_ABOVE
+    #pragma omp parallel for schedule(static, WITH_OPENMP_ABOVE)
+    #endif
     for(size_t i=0; i<this->size; ++i){this->data[i] /= x;}
   }
 };
@@ -130,18 +143,24 @@ public:
     : Signal(fftwf_alloc_complex(size), size){}
   ~ComplexSignal(){fftwf_free(this->data);}
   void operator*=(const float x){
-    #pragma omp parallel for schedule(static, OMP_MIN_VALUE)
+    #ifdef WITH_OPENMP_ABOVE
+    #pragma omp parallel for schedule(static, WITH_OPENMP_ABOVE)
+    #endif
     for(size_t i=0; i<this->size; ++i){
       this->data[i][REAL] *= x;
       this->data[i][IMAG] *= x;
     }
   }
   void operator+=(const float x){
-    #pragma omp parallel for schedule(static, OMP_MIN_VALUE)
+    #ifdef WITH_OPENMP_ABOVE
+    #pragma omp parallel for schedule(static, WITH_OPENMP_ABOVE)
+    #endif
     for(size_t i=0; i<this->size; ++i){this->data[i][REAL] += x;}
   }
   void operator+=(const fftwf_complex x){
-    #pragma omp parallel for schedule(static, OMP_MIN_VALUE)
+    #ifdef WITH_OPENMP_ABOVE
+    #pragma omp parallel for schedule(static, WITH_OPENMP_ABOVE)
+    #endif
     for(size_t i=0; i<this->size; ++i){
       this->data[i][REAL] += x[REAL];
       this->data[i][IMAG] += x[IMAG];
@@ -153,6 +172,41 @@ public:
     }
   }
 };
+
+
+void spectral_correlation(ComplexSignal &a, ComplexSignal &b, ComplexSignal &result){
+  size_t size_a = a.getSize();
+  size_t size_b = b.getSize();
+  if(size_a!=size_b){
+    throw runtime_error(string("ERROR [spectral_convolution]: both sizes must be equal and are (")
+                        + to_string(size_a) + ", " + to_string(size_b) + ")\n");
+  }
+  #ifdef WITH_OPENMP_ABOVE
+  #pragma omp parallel for schedule(static, WITH_OPENMP_ABOVE)
+  #endif
+  for(size_t i=0; i<size_a; ++i){
+    // a * conj(b) = a+ib * c-id = ac-iad+ibc+bd = ac+bd + i(bc-ad)
+     result[i][REAL] = a[i][REAL]*b[i][REAL] + a[i][IMAG]*b[i][IMAG];
+     result[i][IMAG] = a[i][IMAG]*b[i][REAL] - a[i][REAL]*b[i][IMAG];
+  }
+}
+
+void spectral_convolution(ComplexSignal &a, ComplexSignal &b, ComplexSignal &result){
+  size_t size_a = a.getSize();
+  size_t size_b = b.getSize();
+  if(size_a!=size_b){
+    throw runtime_error(string("ERROR [spectral_convolution]: both sizes must be equal and are (")
+                        + to_string(size_a) + ", " + to_string(size_b) + ")\n");
+  }
+  #ifdef WITH_OPENMP_ABOVE
+  #pragma omp parallel for schedule(static, WITH_OPENMP_ABOVE)
+  #endif
+  for(size_t i=0; i<size_a; ++i){
+    // a * conj(b) = a+ib * c-id = ac-iad+ibc+bd = ac+bd + i(bc-ad)
+     result[i][REAL] = a[i][REAL]*b[i][REAL] - a[i][IMAG]*b[i][IMAG];
+     result[i][IMAG] = a[i][IMAG]*b[i][REAL] + a[i][REAL]*b[i][IMAG];
+  }
+}
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -240,29 +294,85 @@ public:
     }
   }
   void execute_xcorr(){
+    // do ffts
     this->plan_forward_s.execute();
     this->plan_forward_p.execute();
-    const size_t N = this->s_complex.getSize();
-    xcorr_complex[0][REAL] = s_complex[0][REAL]*p_complex[0][REAL];
-    #pragma omp parallel for
-    for(size_t i=1; i<N; ++i){
-      conjugate_mul(s_complex[i], p_complex[i], xcorr_complex[i]);
-    }
+    // multiply spectra
+    spectral_correlation(s_complex, p_complex, xcorr_complex);
+    // do ifft and normalize
     this->plan_backward_xcorr.execute();
     this->xcorr /= this->xcorr.getSize();
   }
 };
 
+// OVERLAP-SAVE METHOD:
+// original mide W, patch mide M.
+// 1. le metes al original M-1 por delante.
+// 2. escoges L de manera q X=L+M-1 sea potencia de 2: X = pow2ceil(M)
+// 3. padeas el patch de manera q mida X, es decir le metes L-1
+// 4. calculas la FFT del patch (mide X)
+// 5. calculas las FFT del original, con overlapping! es decir i=i+L
+// 6. multiplicas cada uno de los chirmes, e inviertes el resultado
+ // 7. de cada invertido, descartas los primeros (M-1), y concatenas todo
 
-// class OverlapSaveXCORR : public SimpleXCORR{
-// private:
-//   OverlapSaveXCORR(FloatSignal &signal, FloatSignal &patch){
 
-//   }
-// }
+class OverlapSaveXCORR {
+protected:
+  // class ConvStruct{
+  // public:
+  //   // the patch
+  //   FloatSignal &p;
+  //   ComplexSignal p_complex;
+  //   // the corresponding plans
+  //   vector<FFT_ForwardPlan> forward_plans;
+  //   vector<FFT_BackwardPlan> backward_plans;
+  //   ConvStruct(FloatSignal &patch, vector<FloatSignal> s_chunks, vector<ComplexSignal> s_chunks_complex)
+  //     : p(patch){
+  //     for(auto it = s_chunks.begin(); it!=s_chunks.end(); ++it){
 
+  //     }
+  //   }
+  // };
+public:
+  // the deconstructed signal
+  vector<FloatSignal*> s_chunks;
+  vector<ComplexSignal*> s_chunks_complex;
+  //
+  // ConvStruct conv_struct;
+  //
+  // FloatSignal xcorr;
+  // ComplexSignal xcorr_complex;
+  //
+  OverlapSaveXCORR(FloatSignal &signal, FloatSignal &patch, const string wisdomPath=""){
+    if(!wisdomPath.empty()){
+      import_fftw_wisdom(wisdomPath, false);
+    }
+    FloatSignal padded_signal(signal.getData(), signal.getSize(), patch.getSize()-1, 0);
+    FloatSignal padded_patch = FloatSignal(patch.getData(), patch.getSize(), 0, pow2_ceil(patch.getSize())*2-patch.getSize());
+    padded_patch.print("patch");
+    // load the s_chunks vector, they have length patch.size and desplaza by L
+    size_t X = padded_patch.getSize();
+    size_t X_complex = X/2+1;
+    size_t L = X-patch.getSize()+1;
+    //
+    for(size_t i=0; i<=padded_signal.getSize()-X; i+=L){
+      s_chunks.push_back(new FloatSignal(&padded_signal[i], X));
+      s_chunks_complex.push_back(new ComplexSignal(X_complex));
+    }
+    for (size_t i =0; i<s_chunks.size();i++){
+      s_chunks[i]->print(string("Signal")+to_string(i));
+    }
 
-
+  }
+  ~OverlapSaveXCORR(){
+    for (size_t i =0; i<s_chunks.size();i++){
+      delete (s_chunks[i]);
+      delete (s_chunks_complex[i]);
+    }
+    s_chunks.clear();
+    s_chunks_complex.clear();
+  }
+};
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 /// MAIN ROUTINE
@@ -271,20 +381,21 @@ public:
 int main(int argc,  char** argv){
   const string wisdomPatient = "wisdom_real_dft_pow2_patient"; // make_and_export_fftw_wisdom(wisdomPatient, 0, 29, FFTW_PATIENT);
 
-  size_t o_size = 44100*10;
+  size_t o_size = 20;//44100*10;
   float* o = new float[o_size];  for(size_t i=0; i<o_size; ++i){o[i] = i+1;}
-  size_t m1_size = 44100*1;
+  size_t m1_size = 7;//44100*1;
   float* m1 = new float[m1_size]; for(size_t i=0; i<m1_size; ++i){m1[i]=1;}
   size_t xcorr_size = pow2_ceil(o_size+m1_size);
 
-  FloatSignal s(o, o_size, 0, xcorr_size-o_size);
-  FloatSignal p(m1, m1_size, 0, xcorr_size-m1_size);
-  SimpleXCORR sxc(s, p, wisdomPatient);
+  FloatSignal s(o, o_size);
+  FloatSignal p(m1, m1_size);
 
-  for(int k=0; k<10; ++k){
-    cout << "iter no "<< k << endl;
-    sxc.execute_xcorr();
-  }
+  OverlapSaveXCORR x(s, p);
+  // SimpleXCORR sxc(s, p, wisdomPatient);
+  // for(int k=0; k<10; ++k){
+  //   cout << "iter no "<< k << endl;
+  //   sxc.execute_xcorr();
+  // }
   // sxc.xcorr.print("XCORR");
 
   delete[] o;
@@ -313,15 +424,3 @@ int main(int argc,  char** argv){
 // BUG: calling FloatSignal(arr, size) where arr is a fftwf_alloc_real array causes the sys to freeze
 // benchmark memset vs. multithreaded set USE A PROPER BENCHMARKING LIB
 //
-
-
-
-// OVERLAP-SAVE METHOD:
-// original mide W, patch mide M.
-// 1. le metes al original M-1 por delante.
-// 2. escoges L de manera q X=L+M-1 sea potencia de 2
-// 3. padeas el patch de manera q mida X, es decir le metes L-1
-// 4. calculas la FFT del patch (mide X)
-// 5. calculas las FFT del original, con overlapping! es decir i=i+L
-// 6. multiplicas cada uno de los chirmes, e inviertes el resultado
-// 7. de cada invertido, descartas los primeros (M-1), y concatenas todo
