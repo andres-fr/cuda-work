@@ -19,16 +19,13 @@
 */
 
 
-// TODO/BUGS:
-// - Signal arrays are aligned, but SIMDization wasn't explicitly benchmarked
-// - Calling FloatSignal(arr, size) where arr is a fftwf_alloc_real array
-//   instead of a regular float* array causes the system to freeze
+// TODO:
+// - Signal arrays are aligned, but SIMDization wasn't explicitly benchmarked:
+//   explicitly SIMDize SpectralConvolution and SpectralCorrelation: https://github.com/VcDevel/Vc
 // - Add unit testing with catch
 // - Add and use proper benchmarking lib
-
-// MISC:
+// - Google styleguide https://google.github.io/styleguide/cppguide.html
 // g++ -O3 -std=c++11 -Wall -Wextra xcorr_fftw.cpp -fopenmp -lfftw3f -o test && valgrind --leak-check=full -v ./test
-// https://google.github.io/styleguide/cppguide.html
 
 
 #define REAL 0
@@ -36,7 +33,7 @@
 
 // comment this line to deactivate OpenMP for loop parallelizations.
 // the number is the minimum size that a 'for' loop needs to get sent to OMP (1=>always sent)
-#define WITH_OPENMP_ABOVE 1
+// #define WITH_OPENMP_ABOVE 1
 
 
 //
@@ -60,6 +57,122 @@ using namespace std;
 #include <iterator>
 #include <algorithm>
 
+#include <list>
+
+
+
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+/// TYPECHECK/ANTIBUGGING
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Given a container or its beginning and end iterables, converts the container to a string
+// of the form {a, b, c} (like a basic version of Python's __str__). Usage example:
+// vector<string> c1({"foo", "bar"});
+// vector<size_t> c2({1});
+// list<double> c3({1,2,3,4,5});
+// vector<bool> c4({false, true, false});
+// list<int> c5;
+// cout << IterableToString({1.23, 4.56, -789.0}) << endl;
+// cout << IterableToString(c1) << endl;
+// cout << IterableToString({"hello", "hello"}) << endl;
+// cout << IterableToString(c2) << endl;
+// cout << IterableToString(c3) << endl;
+// cout << IterableToString(c4) << endl;
+// cout << IterableToString(c5.begin(), c5.end()) << endl;
+template<typename T>
+string IterableToString(T it, T end){
+  stringstream ss;
+  ss << "{";
+  bool first = true;
+  for (; it!=end; ++it){
+    if (first){
+      ss << *it;
+      first = false;
+    } else {
+      ss << ", " << *it;
+    }
+  } ss << "}";
+  return ss.str();
+}
+template <class C> // Overload IterableToString to directly accept any Collection like vector<int>
+string IterableToString(const C &c){
+  return IterableToString(c.begin(), c.end());
+}
+template <class T> // Overload IterableToString to directly accept initializer_lists
+string IterableToString(const initializer_list<T> c){
+  return IterableToString(c.begin(), c.end());
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+
+// Given a container or its beginning and end iterables, checks wether all values contained in the
+// iterable are equal and raises an exception if not. Usage example:
+// vector<size_t> v1({});
+// vector<double> v2({123.4, 123.4, 123.4});
+// vector<bool> v3({false, false, false});
+// vector<size_t> v4({1});
+// vector<string> v5({"hello", "hello", "bye"});
+// CheckAllEqual({3,3,3,3,3,3,3,3});
+// CheckAllEqual(v1);
+// CheckAllEqual(v2.begin(), v2.end());
+// CheckAllEqual(v3);
+// CheckAllEqual(v4);
+// CheckAllEqual(v5.begin(), prev(v5.end()));
+// CheckAllEqual(v5);
+template<class I>
+void CheckAllEqual(const I beg, const I end, const string &message="CheckAllEqual"){
+  I it = beg;
+  bool all_eq = true;
+  auto last = (it==end)? end : prev(end);
+  for(;it!=last; ++it){
+    all_eq &= (*(it)==*(next(it)));
+    if (!all_eq) {
+      throw runtime_error(string("[ERROR] ") + message+" "+IterableToString(beg, end));
+    }
+  }
+}
+template <class C>
+void CheckAllEqual(const C &c, const string message="CheckAllEqual"){
+  CheckAllEqual(c.begin(), c.end(), message);
+}
+template <class T>
+void CheckAllEqual(const initializer_list<T> c, const string message="CheckAllEqual"){
+  CheckAllEqual(c.begin(), c.end(), message);
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Raises an exception if complex_size!=(real_size/2+1), being "/" an integer division.
+void CheckRealComplexRatio(const size_t real_size, const size_t complex_size,
+                              const string func_name="CheckRealComplexRatio"){
+  if(complex_size!=(real_size/2+1)){
+    throw runtime_error(string("[ERROR] ") + func_name +
+                        ": size of ComplexSignal must equal size(FloatSignal)/2+1. " +
+                        " Sizes were (float, complex): " +
+                        IterableToString({real_size, complex_size}));
+    }
+}
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+
+// Abstract function that performs a comparation between any 2 elements, and if the comparation
+// returns a truthy value raises an exception with the given message.
+template <class T, class Functor>
+void CheckTwoElements(const T a, const T b, const Functor &binary_predicate,
+                        const string message){
+  if(binary_predicate(a,b)){
+    throw runtime_error(string("[ERROR] ") + message + " " + IterableToString({a, b}));
+  }
+}
+
+// Raises an exception with the given message if a>b.
+void check_a_less_equal_b(const size_t a, const size_t b,
+                          const string message="a was greater than b!"){
+  CheckTwoElements(a, b, [](const size_t a, const size_t b){return a>b;},  message);
+}
+
 
 
 
@@ -68,52 +181,7 @@ using namespace std;
 /// HELPERS
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// template <class Iter>
-// string iterable_to_string(Iter it, Iter end){
-//   string result = "{";
-//   stringstream sstr;
-//   for(;next(it)!=end; ++it){
-//     result += (to_string(*it)+", ");
-//   }
-//   return result + to_string(*it)+"}";
-// }
-
-// // if condition DOESN'T meet, an exception is raised
-// template <class T, class Functor>
-// void check_reduce(initializer_list<T> iterable, Functor reductor_predicate, const string message){
-//   auto beg = iterable.begin();
-//   auto end = iterable.end();
-//   if(!accumulate(beg, end, *beg, reductor_predicate)){
-//     throw length_error(message + iterable_to_string(beg, end));
-//   }
-// }
-
-// void check_equal_lengths(initializer_list<size_t> lengths){
-//   check_reduce(lengths, [&](const size_t a, const size_t b){return a*(a!=b);},
-//                "ERROR [check_equal_lengths]: all sizes must be equal and are ");
-// }
-
-
-// check_equal_lengths({1234,1234,1234,1234});// , "ERROR [check_equal_lengths]: all sizes must be equal and are");
-// check_equal_lengths({3,3,3,3,3});//, "ERROR [check_equal_lengths]: all sizes must be equal and are");
-// check_equal_lengths({1,2,3,4}); //, "ERROR [check_equal_lengths]: all sizes must be equal and are");
-
-
-size_t pow2_ceil(size_t x){return pow(2, ceil(log2(x)));}
-
-// a+ib * c+id = ac+iad+ibc-bd = ac-bd + i(ad+bc)
- void complex_mul(const fftwf_complex &a, const fftwf_complex &b, fftwf_complex &result){
-  result[REAL] = a[REAL]*b[REAL] - a[IMAG]*b[IMAG];
-  result[IMAG] = a[IMAG]*b[REAL] + a[REAL]*b[IMAG];
-}
-
-// a * conj(b) = a+ib * c-id = ac-iad+ibc+bd = ac+bd + i(bc-ad)
-void conjugate_mul(const fftwf_complex &a, const fftwf_complex &b, fftwf_complex &result){
-  result[REAL] = a[REAL]*b[REAL] + a[IMAG]*b[IMAG];
-  result[IMAG] = a[IMAG]*b[REAL] - a[REAL]*b[IMAG];
-}
-
-////////////////////////////////////////////////////////////////////////////////////////////////////
+size_t Pow2Ceil(size_t x){return pow(2, ceil(log2(x)));}
 
 // This is an abstract base class that provides some basic, type-independent functionality for
 // any container that should behave as a signal. It is not intended to be instantiated directly.
@@ -204,41 +272,36 @@ public:
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 // This free function takes three complex signals a,b,c of the same size and computes the complex
-// element-weise multiplication:   a+ib * c+id = ac+iad+ibc-bd = ac-bd + i(ad+bc)   The computation
+// element-wise multiplication:   a+ib * c+id = ac+iad+ibc-bd = ac-bd + i(ad+bc)   The computation
 // loop isn't sent to OMP because this function itself is already expected to be called by multiple
 // threads, and it would actually slow down the process.
 // It throuws an exception if
-void spectral_convolution(const ComplexSignal &a, const ComplexSignal &b, ComplexSignal &result){
-  const size_t size_a = a.getSize();
-  const size_t size_b = b.getSize();
-  const size_t size_result = result.getSize();
-  if(size_a!=size_b || size_a!=size_result){
-    throw runtime_error(string("ERROR [spectral_convolution]: all sizes must be equal and are (")
-                        + to_string(size_a) + ", " + to_string(size_b) + ", " +
-                        to_string(size_result) + ")\n");
-  }
-  for(size_t i=0; i<size_a; ++i){
-    // a * conj(b) = a+ib * c-id = ac-iad+ibc+bd = ac+bd + i(bc-ad)
+void SpectralConvolution(const ComplexSignal &a, const ComplexSignal &b, ComplexSignal &result){
+  const size_t kSize_a = a.getSize();
+  const size_t kSize_b = b.getSize();
+  const size_t kSize_result = result.getSize();
+  CheckAllEqual({kSize_a, kSize_b, kSize_result},
+                  "SpectralConvolution: all sizes must be equal and are");
+  for(size_t i=0; i<kSize_a; ++i){
+    // a+ib * c+id = ac+iad+ibc-bd = ac-bd + i(ad+bc)
      result[i][REAL] = a[i][REAL]*b[i][REAL] - a[i][IMAG]*b[i][IMAG];
      result[i][IMAG] = a[i][IMAG]*b[i][REAL] + a[i][REAL]*b[i][IMAG];
   }
 }
 
-// This function behaves identically to spectral_convolution, but computes c=a*conj(b) instead
+// This function behaves identically to SpectralConvolution, but computes c=a*conj(b) instead
 // of c=a*b:         a * conj(b) = a+ib * c-id = ac-iad+ibc+bd = ac+bd + i(bc-ad)
-void spectral_correlation(const ComplexSignal &a, const ComplexSignal &b, ComplexSignal &result){
-  const size_t size_a = a.getSize();
-  const size_t size_b = b.getSize();
-  const size_t size_result = result.getSize();
-  if(size_a!=size_b || size_a!=size_result){
-    throw runtime_error(string("ERROR [spectral_correlation]: all sizes must be equal and are (")
-                        + to_string(size_a) + ", " + to_string(size_b) + ", " +
-                        to_string(size_result) + ")\n");
-  }
-  for(size_t i=0; i<size_a; ++i){
+void SpectralCorrelation(const ComplexSignal &a, const ComplexSignal &b, ComplexSignal &result){
+  const size_t kSize_a = a.getSize();
+  const size_t kSize_b = b.getSize();
+  const size_t kSize_result = result.getSize();
+  CheckAllEqual({kSize_a, kSize_b, kSize_result},
+                  "SpectralCorrelation: all sizes must be equal and are");
+  for(size_t i=0; i<kSize_a; ++i){
     // a * conj(b) = a+ib * c-id = ac-iad+ibc+bd = ac+bd + i(bc-ad)
-     result[i][REAL] = a[i][REAL]*b[i][REAL] + a[i][IMAG]*b[i][IMAG];
-     result[i][IMAG] = a[i][IMAG]*b[i][REAL] - a[i][REAL]*b[i][IMAG];
+    result[i][REAL] = a[i][REAL]*b[i][REAL] + a[i][IMAG]*b[i][IMAG];
+    result[i][IMAG] = a[i][IMAG]*b[i][REAL] - a[i][REAL]*b[i][IMAG];
+
   }
 }
 
@@ -248,48 +311,40 @@ void spectral_correlation(const ComplexSignal &a, const ComplexSignal &b, Comple
 // parameterless execute() method which is also a wrapper for FFTW's execute.
 // It is not expected to be used directly: rather, to be extended by specific plans, for instance,
 // if working with real, 1D signals, only 1D complex<->real plans are needed.
-class FFT_Plan{
+class FftPlan{
 private:
   fftwf_plan plan_;
 public:
-  explicit FFT_Plan(fftwf_plan p): plan_(p){}
-  virtual ~FFT_Plan(){fftwf_destroy_plan(plan_);}
+  explicit FftPlan(fftwf_plan p): plan_(p){}
+  virtual ~FftPlan(){fftwf_destroy_plan(plan_);}
   void execute(){fftwf_execute(plan_);}
 };
 
 // This forward plan (1D, R->C) is adequate to process 1D floats (real).
-class FFT_ForwardPlan : public FFT_Plan{
+class FftForwardPlan : public FftPlan{
 public:
   // This constructor creates a real->complex plan that performs the FFT(real) and saves it into the
   // complex. As explained in the FFTW docs (http://www.fftw.org/#documentation), the size of
   // the complex has to be size(real)/2+1, so the constructor will throw a runtime error if
   // this condition doesn't hold. Since the signals and the superclass already have proper
   // destructors, no special memory management has to be done.
-  explicit FFT_ForwardPlan(FloatSignal &fs, ComplexSignal &cs)
-    : FFT_Plan(fftwf_plan_dft_r2c_1d(fs.getSize(), fs.getData(), cs.getData(), FFTW_ESTIMATE)){
-    const size_t size_fs = fs.getSize();
-    const size_t size_cs = cs.getSize();
-    if(size_cs!=(size_fs/2+1)){
-      throw runtime_error(string("ERROR [FFT_ForwardPlan]: size of ComplexSignal must equal size(FloatSignal)/2+1! sizes were (F,C): " + to_string(size_fs) + ", " + to_string(size_cs) + "\n"));
-    }
+  explicit FftForwardPlan(FloatSignal &fs, ComplexSignal &cs)
+    : FftPlan(fftwf_plan_dft_r2c_1d(fs.getSize(), fs.getData(), cs.getData(), FFTW_ESTIMATE)){
+    CheckRealComplexRatio(fs.getSize(), cs.getSize(), "FftForwardPlan");
   }
 };
 
 // This backward plan (1D, C->R) is adequate to process spectra of 1D floats (real).
-class FFT_BackwardPlan : public FFT_Plan{
+class FftBackwardPlan : public FftPlan{
 public:
   // This constructor creates a complex->real plan that performs the IFFT(complex) and saves it
   // complex. As explained in the FFTW docs (http://www.fftw.org/#documentation), the size of
   // the complex has to be size(real)/2+1, so the constructor will throw a runtime error if
   // this condition doesn't hold. Since the signals and the superclass already have proper
   // destructors, no special memory management has to be done.
-  explicit FFT_BackwardPlan(ComplexSignal &cs, FloatSignal &fs)
-    : FFT_Plan(fftwf_plan_dft_c2r_1d(fs.getSize(), cs.getData(), fs.getData(), FFTW_ESTIMATE)){
-    const size_t size_fs = fs.getSize();
-    const size_t size_cs = cs.getSize();
-    if(size_cs!=(size_fs/2+1)){
-      throw runtime_error(string("ERROR [FFT_BackardPlan]: size of ComplexSignal must equal size(FloatSignal)/2+1! sizes were (F,C): " + to_string(size_fs) + ", " + to_string(size_cs) + "\n"));
-    }
+  explicit FftBackwardPlan(ComplexSignal &cs, FloatSignal &fs)
+    : FftPlan(fftwf_plan_dft_c2r_1d(fs.getSize(), cs.getData(), fs.getData(), FFTW_ESTIMATE)){
+    CheckRealComplexRatio(fs.getSize(), cs.getSize(), "FftBackwardPlan");
   }
 };
 
@@ -301,27 +356,27 @@ public:
 // while to compute, but has to be done only once (per computer), and then it can be quickly loaded
 // for faster FFT computation, as explained in the docs (http://www.fftw.org/#documentation).
 // See also the docs for different flags. Note that using a wisdom file is optional.
-void make_and_export_fftw_wisdom(const string path_out, const size_t min_2pow=0,
+void MakeAndExportFftwWisdom(const string path_out, const size_t min_2pow=0,
                         const size_t max_2pow=25, const unsigned flag=FFTW_PATIENT){
   for(size_t i=min_2pow; i<=max_2pow; ++i){
     size_t size = pow(2, i);
     FloatSignal fs(size);
     ComplexSignal cs(size/2+1);
     printf("creating forward and backward plans for size=2**%zu=%zu and flag %u...\n", i, size, flag);
-    FFT_ForwardPlan fwd(fs, cs);
-    FFT_BackwardPlan bwd(cs, fs);
+    FftForwardPlan fwd(fs, cs);
+    FftBackwardPlan bwd(cs, fs);
   }
   fftwf_export_wisdom_to_filename(path_out.c_str());
 }
 
-// Given a path to a wisdom file generated with "make_and_export_fft_wisdom", reads and loads it
+// Given a path to a wisdom file generated with "MakeAndExportFftwWisdom", reads and loads it
 // into FFTW to perform faster FFT computations. Using a wisdom file is optional.
-void import_fftw_wisdom(const string path_in, const bool throw_exception_if_fail=true){
+void ImportFftwWisdom(const string path_in, const bool throw_exception_if_fail=true){
   int result = fftwf_import_wisdom_from_filename(path_in.c_str());
   if(result!=0){
-    cout << "[import_fftw_wisdom] succesfully imported " << path_in << endl;
+    cout << "[ImportFftwWisdom] succesfully imported " << path_in << endl;
   } else{
-    string message = "[import_fftw_wisdom] ";
+    string message = "[ImportFftwWisdom] ";
     message += "couldn't import wisdom! is this a path to a valid wisdom file? -->"+path_in+"<--\n";
     if(throw_exception_if_fail){throw runtime_error(string("ERROR: ") + message);}
     else{cout << "WARNING: " << message;}
@@ -339,138 +394,208 @@ void import_fftw_wisdom(const string path_in, const bool throw_exception_if_fail
 // This class performs an efficient version of the spectral convolution/cross-correlation between
 // two 1D float arrays, <SIGNAL> and <PATCH>, called overlap-save:
 // http://www.comm.utoronto.ca/~dkundur/course_info/real-time-DSP/notes/8_Kundur_Overlap_Save_Add.pdf
-// This algorithm requires that the length of <PATCH> is less or equal the length of <SIGNAL>.
+// This algorithm requires that the length of <PATCH> is less or equal the length of <SIGNAL>,
+// so an exception is thrown otherwise. The algorithm works as follows:
+// given signal of length S and patch of length P, and being the conv (or xcorr) length U=S+P-1
+//   1. pad the patch to X = 2*Pow2Ceil(P). FFTs with powers of 2 are the fastest.
+//   2. cut the signal into chunks of size X, with an overlapping section of L=X-(P-1).
+//      for that, pad the signal with (P-1) before, and with (X-U%L) after, to make it fit exactly.
+//   3. Compute the forward FFT of the padded patch and of every chunk of the signal
+//   4. Multiply the FFT of the padded patch with every signal chunk.
+//      4a. If the operation is a convolution, perform a complex a*b multiplication
+//      4b. If the operation is a cross-correlation, perform a complex a*conj(b) multiplication
+//   5. Compute the inverse FFT of every result of step 4
+//   6. Concatenate the resulting chunks, ignoring (P-1) samples per chunk
+// Note that steps 3,4,5 may be parallelized with some significant gain in performance.
+// In this class: X = result_chunksize, L = result_stride
 class OverlapSaveConvolver {
 private:
   // grab input lengths
-  size_t signal_size;
-  size_t patch_size;
-  size_t xcorr_size;
+  size_t signal_size_;
+  size_t patch_size_;
+  size_t result_size_;
   // make padded copies of the inputs and get chunk measurements
-  FloatSignal padded_patch;
-  size_t xcorr_chunksize;
-  size_t xcorr_chunksize_complex;
-  size_t xcorr_stride;
-  ComplexSignal padded_patch_complex;
+  FloatSignal padded_patch_;
+  size_t result_chunksize_;
+  size_t result_chunksize_complex_;
+  size_t result_stride_;
+  ComplexSignal padded_patch_complex_;
   // padded copy of the signal
-  FloatSignal padded_signal;
+  FloatSignal padded_signal_;
   // the deconstructed signal
-  vector<FloatSignal*> s_chunks;
-  vector<ComplexSignal*> s_chunks_complex;
+  vector<FloatSignal*> s_chunks_;
+  vector<ComplexSignal*> s_chunks_complex_;
   // the corresponding xcorrs
-  vector<FloatSignal*> xcorr_chunks;
-  vector<ComplexSignal*> xcorr_chunks_complex;
+  vector<FloatSignal*> result_chunks_;
+  vector<ComplexSignal*> result_chunks_complex_;
   // the corresponding plans (plus the plan of the patch)
-  vector<FFT_ForwardPlan*> forward_plans;
-  vector<FFT_BackwardPlan*> backward_plans;
-  //
-  void _execute(const bool cross_correlate){
-    auto operation = (cross_correlate)? spectral_correlation : spectral_convolution;
+  vector<FftForwardPlan*> forward_plans_;
+  vector<FftBackwardPlan*> backward_plans_;
+
+  // Basic state MANAGEMENT to prevent getters from being called prematurely.
+  // Also to adapt the getters, since Conv and Xcorr padding behaves differently
+  enum class State {kUninitialized, kConv, kXcorr};
+  State _state_; // NULL at the beginning, then true after xcorr, false after conv
+  // This private method throws an exception if _state_ is kNone, because that
+  // means that some "getter" has ben called before any computation has been performed.
+  void __check_last_executed_not_null(const string method_name){
+    if(_state_ == State::kUninitialized){
+      throw runtime_error(string("[ERROR] OverlapSaveConvolver.") + method_name +
+                          "() can't be called before executeXcorr() or executeConv()!" +
+                          " No meaningful data has been computed yet.");
+    }
+  }
+
+  // This private method implements steps 3,4,5 of the algorithm. If the given flag is false,
+  // it will perform a convolution (4a), and a cross-correlation (4b) otherwise.
+  void __execute(const bool cross_correlate){
+    auto operation = (cross_correlate)? SpectralCorrelation : SpectralConvolution;
     // do ffts
     #ifdef WITH_OPENMP_ABOVE
     #pragma omp parallel for schedule(static, WITH_OPENMP_ABOVE)
     #endif
-    for (size_t i =0; i<forward_plans.size();i++){
-      forward_plans.at(i)->execute();
+    for (size_t i =0; i<forward_plans_.size();i++){
+      forward_plans_.at(i)->execute();
     }
     // multiply spectra
     #ifdef WITH_OPENMP_ABOVE
     #pragma omp parallel for schedule(static, WITH_OPENMP_ABOVE)
     #endif
-    for (size_t i =0; i<xcorr_chunks.size();i++){
-      operation(*s_chunks_complex.at(i), this->padded_patch_complex, *xcorr_chunks_complex.at(i));
+    for (size_t i =0; i<result_chunks_.size();i++){
+      operation(*s_chunks_complex_.at(i), this->padded_patch_complex_, *result_chunks_complex_.at(i));
     }
     // do iffts
     #ifdef WITH_OPENMP_ABOVE
     #pragma omp parallel for schedule(static, WITH_OPENMP_ABOVE)
     #endif
-    for (size_t i =0; i<xcorr_chunks.size();i++){
-      backward_plans.at(i)->execute();
-      *xcorr_chunks.at(i) /= this->xcorr_chunksize;
+    for (size_t i =0; i<result_chunks_.size();i++){
+      backward_plans_.at(i)->execute();
+      *result_chunks_.at(i) /= result_chunksize_;
     }
   }
 
 public:
+  // The only constructor for the class, receives two signals and performs steps 1 and 2 of the
+  // algorithm on them. The signals are passed by reference but the class works with padded copies
+  // of them, so no care has to be taken regarding memory management.
+  // The wisdomPath may be empty, or a path to a valid wisdom file.
+  // Note that len(signal) can never be smaller than len(patch), or an exception is thrown.
   OverlapSaveConvolver(FloatSignal &signal, FloatSignal &patch, const string wisdomPath="")
-    : signal_size(signal.getSize()),
-      patch_size(patch.getSize()),
-      xcorr_size(signal_size+patch_size-1),
+    : signal_size_(signal.getSize()),
+      patch_size_(patch.getSize()),
+      result_size_(signal_size_+patch_size_-1),
       //
-      padded_patch(patch.getData(), patch_size, 0, 2*pow2_ceil(patch_size)-patch_size),
-      xcorr_chunksize(padded_patch.getSize()),
-      xcorr_chunksize_complex(xcorr_chunksize/2+1),
-      xcorr_stride(xcorr_chunksize-patch_size+1),
-      padded_patch_complex(xcorr_chunksize_complex),
+      padded_patch_(patch.getData(), patch_size_, 0, 2*Pow2Ceil(patch_size_)-patch_size_),
+      result_chunksize_(padded_patch_.getSize()),
+      result_chunksize_complex_(result_chunksize_/2+1),
+      result_stride_(result_chunksize_-patch_size_+1),
+      padded_patch_complex_(result_chunksize_complex_),
       //
-      padded_signal(signal.getData(),signal_size,patch_size-1, xcorr_chunksize-(xcorr_size%xcorr_stride)){
-      //
-    if(signal_size<patch_size){
-      throw length_error(string("ERROR [OverlapSaveConvolver]: ") +
-                         "len(signal) can't be smaller than len(patch)\n");
-    }
-
-    if(!wisdomPath.empty()){import_fftw_wisdom(wisdomPath, false);}
+      padded_signal_(signal.getData(),signal_size_,patch_size_-1, result_chunksize_-(result_size_%result_stride_)),
+      _state_(State::kUninitialized){
+      // end of initializer list, now check that len(signal)>=len(patch)
+    check_a_less_equal_b(patch_size_, signal_size_,
+                         "OverlapSaveConvolver: leng(signal) can't be smaller than len(patch)!");
+    // and load the wisdom if required. If unsuccessful, no exception thrown, just print a warning.
+    if(!wisdomPath.empty()){ImportFftwWisdom(wisdomPath, false);}
     // chunk the signal into strides of same size as padded patch
     // and make complex counterparts too, as well as the corresponding xcorr signals
-    for(size_t i=0; i<=padded_signal.getSize()-xcorr_chunksize; i+=xcorr_stride){
-      s_chunks.push_back(new FloatSignal(&padded_signal[i], xcorr_chunksize));
-      s_chunks_complex.push_back(new ComplexSignal(xcorr_chunksize_complex));
-      xcorr_chunks.push_back(new FloatSignal(xcorr_chunksize));
-      xcorr_chunks_complex.push_back(new ComplexSignal(xcorr_chunksize_complex));
+    for(size_t i=0; i<=padded_signal_.getSize()-result_chunksize_; i+=result_stride_){
+      s_chunks_.push_back(new FloatSignal(&padded_signal_[i], result_chunksize_));
+      s_chunks_complex_.push_back(new ComplexSignal(result_chunksize_complex_));
+      result_chunks_.push_back(new FloatSignal(result_chunksize_));
+      result_chunks_complex_.push_back(new ComplexSignal(result_chunksize_complex_));
     }
     // make one forward plan per signal chunk, and one for the patch
     // Also backward plans for the xcorr chunks
-    forward_plans.push_back(new FFT_ForwardPlan(padded_patch, padded_patch_complex));
-    for (size_t i =0; i<s_chunks.size();i++){
-      forward_plans.push_back(new FFT_ForwardPlan(*s_chunks.at(i), *s_chunks_complex.at(i)));
-      backward_plans.push_back(new FFT_BackwardPlan(*xcorr_chunks_complex.at(i), *xcorr_chunks.at(i)));
+    forward_plans_.push_back(new FftForwardPlan(padded_patch_, padded_patch_complex_));
+    for (size_t i =0; i<s_chunks_.size();i++){
+      forward_plans_.push_back(new FftForwardPlan(*s_chunks_.at(i), *s_chunks_complex_.at(i)));
+      backward_plans_.push_back(new FftBackwardPlan(*result_chunks_complex_.at(i),
+                                                     *result_chunks_.at(i)));
     }
   }
-  void execute_conv(){_execute(false);}
-  void execute_xcorr(){_execute(true);}
+
+  //
+  void executeConv(){
+    __execute(false);
+    _state_ = State::kConv;
+  }
+  void executeXcorr(){
+    __execute(true);
+    _state_ = State::kXcorr;
+  }
   // getting info from the convolfer
-  void print_chunks(const string name="convolver"){
-    for (size_t i =0; i<xcorr_chunks.size();i++){
-      xcorr_chunks.at(i)->print(name+"_chunk_"+to_string(i));
+  void printChunks(const string name="convolver"){
+    __check_last_executed_not_null("printChunks");
+    for (size_t i =0; i<result_chunks_.size();i++){
+      result_chunks_.at(i)->print(name+"_chunk_"+to_string(i));
     }
   }
-  FloatSignal extract_result(){
-    const size_t offset = patch_size-1;
-    FloatSignal result(xcorr_size);
-    float* result_arr = result.getData();
-    // collapse all the xcorr chunks into result except for the first one
-    for (size_t i=1; i<xcorr_chunks.size();i++){
-      float* xc_arr = xcorr_chunks.at(i)->getData();
-      memcpy(result_arr+(i*xcorr_stride-offset), xc_arr, sizeof(float)*xcorr_stride);
+
+  // This method implements step 6 of the overlap-save algorithm. In convolution, the first (P-1)
+  // samples of each chunk are discarded, in xcorr the last (P-1) ones. Therefore, depending on the
+  // current _state_, the corresponding method is used. USAGE:
+  // Every time it is called, this function returns a new FloatSignal instance of size
+  // len(signal)+len(patch)-1. If the last operation performed was executeConv(), this function
+  // will return the  convolution of signal and patch. If the last operation performed was
+  // executeXcorr(), the result will contain the cross-correlation. If none of them was performed
+  // at the moment of calling this function, an exception will be thrown.
+  // The indexing will start with the most negative relation, and increase accordingly. Which means:
+  //   given S:=len(signal), P:=len(patch), T:=S+P-1
+  // for 0 <= i < T, result[i] will hold dot_product(patch, signal[i-(P-1) : i])
+  //   where patch will be "reversed" if the convolution was performed. For example:
+  // Signal :=        [1 2 3 4 5 6 7]    Patch = [1 1 1]
+  // Result[0] =  [1 1 1]                        => 1*1         = 1  // FIRST ENTRY
+  // Result[1] =    [1 1 1]                      => 1*1+1*2     = 3
+  // Result[2] =      [1 1 1]                    => 1*1+1*2+1*3 = 8  // FIRST NON-NEG ENTRY AT P-1
+  //   ...
+  // Result[8] =                  [1 1 1]        => 1*7         = 7  // LAST ENTRY
+  // Note that the returned signal object takes care of its own memory, so no management is needed.
+  FloatSignal extractResult(){
+    // make sure that an operation was called before
+    __check_last_executed_not_null("extractResult");
+    // set the offset for the corresponding operation (0 for xcorr).
+    size_t discard_offset = 0;
+    if(_state_==State::kConv){discard_offset = result_chunksize_ - result_stride_;}
+    // instantiate new signal to be filled with the desired info
+    FloatSignal result(result_size_);
+    float* result_arr = result.getData(); // not const because of memcpy
+    // fill!
+    static size_t kNumChunks = result_chunks_.size();
+    for (size_t i=0; i<kNumChunks;i++){
+      float* xc_arr = result_chunks_.at(i)->getData();
+      const size_t kBegin = i*result_stride_;
+      // if the last chunk goes above result_size_, reduce copy size. else copy_size=result_stride_
+      size_t copy_size = result_stride_;
+      copy_size -= (kBegin+result_stride_>result_size_)? kBegin+result_stride_-result_size_ : 0;
+      memcpy(result_arr+kBegin, xc_arr+discard_offset, sizeof(float)*copy_size);
     }
-    // collapse the first chunk into result: negative indexes go at the end
-    float* xc_0 = xcorr_chunks.at(0)->getData();
-    for(size_t i=0; i<offset; ++i){result[i+signal_size] = xc_0[i];}
-    for(size_t i=offset; i<xcorr_chunksize-offset; ++i){result[i-offset] = xc_0[i];}
     return result;
   }
+
   ~OverlapSaveConvolver(){
     // clear vectors holding signals
-    for (size_t i =0; i<s_chunks.size();i++){
-      delete (s_chunks.at(i));
-      delete (s_chunks_complex.at(i));
-      delete (xcorr_chunks.at(i));
-      delete (xcorr_chunks_complex.at(i));
+    for (size_t i =0; i<s_chunks_.size();i++){
+      delete (s_chunks_.at(i));
+      delete (s_chunks_complex_.at(i));
+      delete (result_chunks_.at(i));
+      delete (result_chunks_complex_.at(i));
     }
-    s_chunks.clear();
-    s_chunks_complex.clear();
-    xcorr_chunks.clear();
-    xcorr_chunks_complex.clear();
+    s_chunks_.clear();
+    s_chunks_complex_.clear();
+    result_chunks_.clear();
+    result_chunks_complex_.clear();
     // clear vector holding forward FFT plans
-    for (size_t i =0; i<forward_plans.size();i++){
-      delete (forward_plans.at(i));
+    for (size_t i =0; i<forward_plans_.size();i++){
+      delete (forward_plans_.at(i));
     }
-    forward_plans.clear();
+    forward_plans_.clear();
     // clear vector holding backward FFT plans
-    for (size_t i =0; i<backward_plans.size();i++){
-      delete (backward_plans.at(i));
+    for (size_t i =0; i<backward_plans_.size();i++){
+      delete (backward_plans_.at(i));
     }
-    backward_plans.clear();
+    backward_plans_.clear();
   }
 };
 
@@ -483,58 +608,42 @@ public:
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 int main(int argc,  char** argv){
-  const string wisdomPatient = "wisdom_real_dft_pow2_patient";
 
-  // do this just once
-  // make_and_export_fftw_wisdom(wisdomPatient, 0, 29, FFTW_PATIENT);
+  // // do this just once to configure your system for an optimal FFT
+  // const string kWisdomPatient = "wisdom_real_dft_pow2_patient";
+  // MakeAndExportFftwWisdom(kWisdomPatient, 0, 29, FFTW_PATIENT);
 
-  size_t o_size = 10;//44100*10;
-  float* o = new float[o_size];  for(size_t i=0; i<o_size; ++i){o[i] = i+1;}
-  size_t m1_size = 3;// 44100*1;
-  float* m1 = new float[m1_size]; for(size_t i=0; i<m1_size; ++i){m1[i]=m1_size-i;}
-  size_t xcorr_size = pow2_ceil(o_size+m1_size);
-
-  FloatSignal s(o, o_size);
-  FloatSignal p(m1, m1_size);
-
+  // create a test signal
+  const size_t kSizeS = 10; //44100*10;
+  float* s_arr = new float[kSizeS]; for(size_t i=0; i<kSizeS; ++i){s_arr[i] = i+1;}
+  FloatSignal s(s_arr, kSizeS);
   s.print("signal");
-  p.print("material");
 
+  // create a test patch
+  const size_t kSizeP = 2;// 44100*1;
+  float* p_arr = new float[kSizeP]; for(size_t i=0; i<kSizeP; ++i){p_arr[i]=i+1;}
+  FloatSignal p(p_arr, kSizeP);
+  p.print("patch");
+
+  // Try some simple convolution
   OverlapSaveConvolver x(s, p);
-  x.execute_xcorr();
-  x.extract_result().print("xcorr");
+  // CONV
+  x.executeConv();
+  // x.printChunks("conv");
+  x.extractResult().print("conv");
+  // XCORR
+  x.executeXcorr();
+  // x.printChunks("xcorr");
+  x.extractResult().print("xcorr");
 
-  x.execute_conv();
-  x.extract_result().print("conv");
-
-
-  TStopwatch timer1;
-  for(int k=0; k<10; ++k){
-    cout << "iter no "<< k << endl;
-    x.execute_xcorr();
-  }
-  timer1.Stop();
-  double t1 = timer1.RealTime()*1000;
-  printf("\ttime of function 1 (ms): %f\n", timer1.RealTime()*1000);
-
-  // x.extract_current_xcorr().print("extracted");
-
-  //
-  delete[] o;
-  delete[] m1;
+  // clean memory and exit
+  delete[] s_arr;
+  delete[] p_arr;
   return 0;
 }
 
 
-// TODO: conv/xcorr mechanism is buggy.
-// change method names
-// finish commenting convolver class
-// make proper error system maybe inheriting?
-// dont forget to check valgrind
-//
-
 // FURTHER DO:
-// add unit test and benchmarking libraries
 // write the class "optimizer": consider wether it can hold a collection of "convolvers", plus an extra
 //  to-be-optimized signal, and work like that
 // make sure that the optimizer allows for flexible signal picking and optimization heuristics, without losing performance
